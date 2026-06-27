@@ -13,7 +13,7 @@ GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
 IDEOGRAM_API_KEY = os.getenv("IDEOGRAM_API_KEY")
 
 GROQ_MODEL     = "llama-3.3-70b-versatile"
-IDEOGRAM_MODEL = "V_4"
+IDEOGRAM_MODEL = "V_2"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 wp_auth = (WP_USER, WP_APP_PASS)
@@ -47,6 +47,8 @@ def generate_article(topic):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
+    import re
+    raw = re.sub(r'[\x00-\x1f\x7f](?<![\n\r\t])', '', raw)
     data = json.loads(raw.strip())
     print(f"    Заголовок: {data['title']}")
     return data
