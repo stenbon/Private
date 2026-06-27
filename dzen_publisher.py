@@ -70,19 +70,22 @@ def generate_article(topic):
 
 def generate_cover_image(prompt):
     print("[2/4] Генерирую обложку (Ideogram)...")
-    response = requests.post(
-        "https://api.ideogram.ai/generate",
-        headers={"Api-Key": IDEOGRAM_API_KEY, "Content-Type": "application/json"},
-        json={"image_request": {
+    payload = {
+        "image_request": {
             "prompt": f"{prompt}. Photorealistic, editorial style, no text, no watermarks.",
             "model": "V_2",
             "aspect_ratio": "ASPECT_16_9",
-        }},
+        }
+    }
+    print(f"    Запрос: {payload}")
+    response = requests.post(
+        "https://api.ideogram.ai/generate",
+        headers={"Api-Key": IDEOGRAM_API_KEY, "Content-Type": "application/json"},
+        json=payload,
         timeout=60,
     )
-    if not response.ok:
-        print(f"    Ideogram error: {response.text}")
-    print(f"    Ideogram status: {response.status_code} — {response.text[:300]}")
+    print(f"    Статус: {response.status_code}")
+    print(f"    Ответ: {response.text[:500]}")
     response.raise_for_status()
     img_url = response.json()["data"][0]["url"]
     return requests.get(img_url, timeout=30).content
