@@ -1,4 +1,4 @@
-import os, sys, json, requests
+import os, sys, json, re, requests
 from datetime import datetime
 from dotenv import load_dotenv
 from groq import Groq
@@ -12,18 +12,39 @@ WP_CATEGORY = int(os.getenv("WP_CATEGORY", "1"))
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
 IDEOGRAM_API_KEY = os.getenv("IDEOGRAM_API_KEY")
 
-GROQ_MODEL     = "llama-3.3-70b-versatile"
-IDEOGRAM_MODEL = "V_2"
-
+GROQ_MODEL = "llama-3.3-70b-versatile"
 groq_client = Groq(api_key=GROQ_API_KEY)
 wp_auth = (WP_USER, WP_APP_PASS)
 
 ARTICLE_SYSTEM = """Ты — опытный автор для Яндекс Дзен.
-Пиши живым разговорным языком, от первого лица или нейтрально.
-Структура: цепляющий вступ (2-3 предложения) -> 3-5 смысловых блоков -> вывод.
-Форматирование: только HTML-теги <p>, <h2>, <h3>, <ul>, <li>, <b>, <i>.
-Без markdown. Без заголовка в начале текста.
-Объём: 800-1200 слов."""
+Пиши живым разговорным языком. Структура: вступ -> 3-5 блоков -> вывод.
+Форматирование: только теги <p><h2><h3><ul><li><b><i>. Без markdown.
+Объём: 800-1200 слов.
+ВАЖНО: ответ должен быть валидным JSON в одну строку без переносов строк внутри значений."""
+
+def fix_json(raw):
+    """Исправляет литеральные управляющие символы внутри JSON-строк."""
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in raw:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+        elif ch == '\\':
+            result.append(ch)
+            escape_next = True
+        elif ch == '"':
+            in_string = not in_string
+            result.append(ch)
+        elif in_string and ord(ch) < 0x20:
+            if ch == '\n': result.append('\\n')
+            elif ch == '\r': result.append('\\r')
+            elif ch == '\t': result.append('\\t')
+            # остальные управляющие символы — пропускаем
+        else:
+            result.append(ch)
+    return ''.join(result)
 
 def generate_article(topic):
     print("[1/4] Генерирую текст...")
@@ -33,47 +54,40 @@ def generate_article(topic):
             {"role": "system", "content": ARTICLE_SYSTEM},
             {"role": "user", "content": f"""Напиши статью для Яндекс Дзен на тему: {topic}
 
-Верни ответ строго в формате JSON (без markdown-блоков):
-{{
-  "title": "цепляющий заголовок до 60 символов",
-  "html": "полный HTML текст статьи",
-  "image_prompt": "описание обложки на английском для Ideogram, фотореалистично, без текста, широкий формат"
-}}"""}
+Верни ТОЛЬКО валидный JSON без markdown-блоков:
+{{"title":"заголовок до 60 символов","html":"HTML текст одной строкой","image_prompt":"описание обложки на английском, фотореализм, без текста, 16:9"}}"""}
         ],
         max_tokens=4096,
     )
     raw = response.choices[0].message.content.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    import re
-    raw = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', raw)
-    data = json.loads(raw.strip())
+        if raw.startswith("json"): raw = raw[4:]
+    raw = fix_json(raw.strip())
+    data = json.loads(raw)
     print(f"    Заголовок: {data['title']}")
     return data
 
 def generate_cover_image(prompt):
     print("[2/4] Генерирую обложку (Ideogram)...")
-    full_prompt = (f"{prompt}. Photorealistic, high quality, editorial style, "
-                   "no text, no watermarks, wide format for blog header.")
     response = requests.post(
         "https://api.ideogram.ai/generate",
         headers={"Api-Key": IDEOGRAM_API_KEY, "Content-Type": "application/json"},
-        json={
-            "image_request": {
-                "prompt": full_prompt,
-                "model": "V_2",
-                "aspect_ratio": "ASPECT_16_9",
+        json={"image_request": {
+            "prompt": f"{prompt}. Photorealistic, editorial style, no text, no watermarks.",
+            "model": "V_2",
+            "aspect_ratio": "ASPECT_16_9",
         }},
         timeout=60,
     )
+    if not response.ok:
+        print(f"    Ideogram error: {response.text}")
     response.raise_for_status()
     img_url = response.json()["data"][0]["url"]
     return requests.get(img_url, timeout=30).content
 
 def upload_image_to_wp(image_bytes, filename):
-    print("[3/4] Загружаю обложку в WordPress...")
+    print("[3/4] Загружаю обложку...")
     response = requests.post(
         f"{WP_URL}/wp-json/wp/v2/media",
         headers={"Content-Disposition": f'attachment; filename="{filename}"',
