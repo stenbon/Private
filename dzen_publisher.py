@@ -59,18 +59,21 @@ def make_slug(title):
 
 
 def insert_banner(html):
-    """Вставляет баннер автора после 2-го абзаца"""
-    parts = re.split(r'(<p\b[^>]*>.*?</p>)', html, flags=re.DOTALL)
-    p_count = 0
+    """Вставляет баннер автора после 3-го тега <h5>"""
+    parts = re.split(r'(<h5\b[^>]*>.*?</h5>)', html, flags=re.DOTALL)
+    h5_count = 0
     result = []
     inserted = False
     for part in parts:
         result.append(part)
-        if re.match(r'<p\b', part) and not inserted:
-            p_count += 1
-            if p_count == 2:
+        if re.match(r'<h5\b', part) and not inserted:
+            h5_count += 1
+            if h5_count == 3:
                 result.append(AUTHOR_BANNER)
                 inserted = True
+    if not inserted:
+        # Если h5 меньше 3 — вставляем в конец
+        result.append(AUTHOR_BANNER)
     return ''.join(result)
 
 
@@ -78,12 +81,11 @@ def insert_banner(html):
 
 ARTICLE_SYSTEM = """Ты — опытный автор для Яндекс Дзен.
 Пиши живым разговорным языком, от первого лица или нейтрально.
-Структура: цепляющий вступ (2 абзаца <p>) → 4–6 смысловых разделов → заключение.
-Каждый раздел: заголовок <h3>, текст из 2–4 абзацев <p>, при необходимости <ul><li>.
-Подзаголовки внутри раздела: <h5>. Под-подзаголовки: <h6>.
+Структура: цепляющий вступ (2 абзаца <p>) → 5–7 смысловых разделов → заключение.
+Каждый раздел: заголовок <h3>, текст 3–5 абзацев <p>, подзаголовки <h5>, при необходимости <ul><li>.
 НЕ используй <h1>, <h2>, <h4> — никогда.
-НЕ используй markdown. Без заголовка статьи в начале текста — он добавляется отдельно.
-Минимальный объём: 3500 символов чистого текста (без HTML тегов)."""
+НЕ используй markdown. Без заголовка статьи в начале текста.
+Минимальный объём: 1500 слов. Это обязательное требование."""
 
 
 def generate_article(topic):
@@ -92,14 +94,14 @@ def generate_article(topic):
 
     response = groq_client.chat.completions.create(
         model=GROQ_MODEL,
-        max_tokens=6000,
+        max_tokens=8000,
         messages=[
             {"role": "system", "content": ARTICLE_SYSTEM},
             {"role": "user", "content": f"""Напиши статью для Яндекс Дзен на тему: {topic}
 
 Верни ответ строго в таком формате (без лишних слов до и после):
 <title>цепляющий заголовок до 60 символов</title>
-<html>полный HTML текст статьи — минимум 3500 символов текста</html>
+<html>полный HTML текст статьи — минимум 1500 слов</html>
 <image_prompt>описание обложки на английском, фотореализм, без текста, 16:9</image_prompt>"""},
         ],
     )
@@ -110,15 +112,15 @@ def generate_article(topic):
     html         = re.search(r"<html>(.*?)</html>",                 raw, re.DOTALL).group(1).strip()
     image_prompt = re.search(r"<image_prompt>(.*?)</image_prompt>", raw, re.DOTALL).group(1).strip()
 
-    # Вставляем баннер автора после 2-го абзаца
     html = insert_banner(html)
 
-    # Проверка длины
-    text_len = len(re.sub(r'<[^>]+>', '', html))
+    text_only = re.sub(r'<[^>]+>', '', html)
+    word_count = len(text_only.split())
+    char_count = len(text_only)
     print(f"    Заголовок: {title}")
-    print(f"    Длина текста: {text_len} символов")
-    if text_len < 3500:
-        print(f"    ВНИМАНИЕ: текст короче 3500 символов ({text_len})")
+    print(f"    Объём: {word_count} слов / {char_count} символов")
+    if word_count < 1500:
+        print(f"    ВНИМАНИЕ: текст короче 1500 слов ({word_count})")
 
     return {"title": title, "html": html, "image_prompt": image_prompt}
 
