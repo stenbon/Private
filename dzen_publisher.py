@@ -50,12 +50,13 @@ def generate_article(topic):
     print("[1/4] Генерирую текст...")
     response = groq_client.chat.completions.create(
         model=GROQ_MODEL,
+        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": ARTICLE_SYSTEM},
             {"role": "user", "content": f"""Напиши статью для Яндекс Дзен на тему: {topic}
 
-Верни ТОЛЬКО валидный JSON без markdown-блоков:
-{{"title":"заголовок до 60 символов","html":"HTML текст одной строкой","image_prompt":"описание обложки на английском, фотореализм, без текста, 16:9"}}"""}
+Верни JSON:
+{{"title":"заголовок до 60 символов","html":"HTML текст","image_prompt":"описание обложки на английском, фотореализм, без текста, 16:9"}}"""}
         ],
         max_tokens=4096,
     )
