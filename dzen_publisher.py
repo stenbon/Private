@@ -30,18 +30,60 @@ WP_CATEGORY  = int(os.getenv("WP_CATEGORY", "1"))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL   = "llama-3.3-70b-versatile"
 
+AUTHOR_BANNER = (
+    '<img src="https://000l.ru/wp-content/uploads/2026/06/'
+    'ChatGPT-Image-5-июн.-2026-г.-19_59_37.png" '
+    'style="width:100%;display:block;margin:20px 0;" />'
+)
+
 wp_auth     = (WP_USER, WP_APP_PASS)
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+
+# ─── Вспомогательные функции ─────────────────────────────────────────────────
+
+def make_slug(title):
+    """Транслитерирует русский заголовок в латинский slug для WordPress"""
+    translit = {
+        'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo',
+        'ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m',
+        'н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u',
+        'ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'sch',
+        'ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya',
+    }
+    result = ''
+    for ch in title.lower():
+        result += translit.get(ch, ch)
+    result = re.sub(r'[^a-z0-9]+', '-', result)
+    return result.strip('-')[:60]
+
+
+def insert_banner(html):
+    """Вставляет баннер автора после 2-го абзаца"""
+    parts = re.split(r'(<p\b[^>]*>.*?</p>)', html, flags=re.DOTALL)
+    p_count = 0
+    result = []
+    inserted = False
+    for part in parts:
+        result.append(part)
+        if re.match(r'<p\b', part) and not inserted:
+            p_count += 1
+            if p_count == 2:
+                result.append(AUTHOR_BANNER)
+                inserted = True
+    return ''.join(result)
 
 
 # ─── 1. Генерация текста статьи ──────────────────────────────────────────────
 
 ARTICLE_SYSTEM = """Ты — опытный автор для Яндекс Дзен.
 Пиши живым разговорным языком, от первого лица или нейтрально.
-Структура: цепляющий вступ (2–3 предложения) → 3–5 смысловых блоков → вывод.
-Форматирование: только HTML-теги <p>, <h2>, <h3>, <ul>, <li>, <b>, <i>.
-Без markdown. Без заголовка в начале текста — он будет добавлен отдельно.
-Объём: 800–1200 слов."""
+Структура: цепляющий вступ (2 абзаца <p>) → 4–6 смысловых разделов → заключение.
+Каждый раздел: заголовок <h3>, текст из 2–4 абзацев <p>, при необходимости <ul><li>.
+Подзаголовки внутри раздела: <h5>. Под-подзаголовки: <h6>.
+НЕ используй <h1>, <h2>, <h4> — никогда.
+НЕ используй markdown. Без заголовка статьи в начале текста — он добавляется отдельно.
+Минимальный объём: 3500 символов чистого текста (без HTML тегов)."""
 
 
 def generate_article(topic):
@@ -50,14 +92,14 @@ def generate_article(topic):
 
     response = groq_client.chat.completions.create(
         model=GROQ_MODEL,
-        max_tokens=4096,
+        max_tokens=6000,
         messages=[
             {"role": "system", "content": ARTICLE_SYSTEM},
             {"role": "user", "content": f"""Напиши статью для Яндекс Дзен на тему: {topic}
 
 Верни ответ строго в таком формате (без лишних слов до и после):
 <title>цепляющий заголовок до 60 символов</title>
-<html>полный HTML текст статьи</html>
+<html>полный HTML текст статьи — минимум 3500 символов текста</html>
 <image_prompt>описание обложки на английском, фотореализм, без текста, 16:9</image_prompt>"""},
         ],
     )
@@ -68,7 +110,16 @@ def generate_article(topic):
     html         = re.search(r"<html>(.*?)</html>",                 raw, re.DOTALL).group(1).strip()
     image_prompt = re.search(r"<image_prompt>(.*?)</image_prompt>", raw, re.DOTALL).group(1).strip()
 
+    # Вставляем баннер автора после 2-го абзаца
+    html = insert_banner(html)
+
+    # Проверка длины
+    text_len = len(re.sub(r'<[^>]+>', '', html))
     print(f"    Заголовок: {title}")
+    print(f"    Длина текста: {text_len} символов")
+    if text_len < 3500:
+        print(f"    ВНИМАНИЕ: текст короче 3500 символов ({text_len})")
+
     return {"title": title, "html": html, "image_prompt": image_prompt}
 
 
@@ -117,11 +168,15 @@ def publish_post(title, html, media_id):
     """Публикует пост, возвращает данные поста (id, link)"""
     print("[4/4] Публикую пост в WordPress...")
 
+    slug = make_slug(title)
+    print(f"    Slug: {slug}")
+
     response = requests.post(
         f"{WP_URL}/wp-json/wp/v2/posts",
         json={
             "title":          title,
             "content":        html,
+            "slug":           slug,
             "status":         "publish",
             "featured_media": media_id,
             "categories":     [WP_CATEGORY],
