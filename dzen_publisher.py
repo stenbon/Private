@@ -82,6 +82,7 @@ def generate_cover_image(prompt):
     )
     if not response.ok:
         print(f"    Ideogram error: {response.text}")
+    print(f"    Ideogram status: {response.status_code} — {response.text[:300]}")
     response.raise_for_status()
     img_url = response.json()["data"][0]["url"]
     return requests.get(img_url, timeout=30).content
