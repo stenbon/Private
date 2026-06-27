@@ -2,8 +2,10 @@ name: Dzen Auto Publisher
 
 on:
   schedule:
-    - cron: '0 7 * * *'
-  workflow_dispatch:
+    - cron: '0 22 * * *'   # 01:00 МСК
+    - cron: '0 2 * * *'    # 05:00 МСК
+    - cron: '0 11 * * *'   # 14:00 МСК
+  workflow_dispatch:        # ручной запуск через кнопку в GitHub
 
 jobs:
   publish:
@@ -28,5 +30,5 @@ jobs:
           WP_APP_PASS:      ${{ secrets.WP_APP_PASS }}
           WP_CATEGORY:      ${{ secrets.WP_CATEGORY }}
           GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
-          IDEOGRAM_API_KEY: ${{ secrets.IDEOGRAM_API_KEY }}
         run: python dzen_publisher.py topics.txt
+
