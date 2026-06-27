@@ -48,7 +48,7 @@ def generate_article(topic):
         if raw.startswith("json"):
             raw = raw[4:]
     import re
-    raw = re.sub(r'[\x00-\x1f\x7f](?<![\n\r\t])', '', raw)
+    raw = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', raw)
     data = json.loads(raw.strip())
     print(f"    Заголовок: {data['title']}")
     return data
@@ -60,12 +60,11 @@ def generate_cover_image(prompt):
     response = requests.post(
         "https://api.ideogram.ai/generate",
         headers={"Api-Key": IDEOGRAM_API_KEY, "Content-Type": "application/json"},
-        json={"image_request": {
-            "prompt": full_prompt,
-            "model": IDEOGRAM_MODEL,
-            "aspect_ratio": "ASPECT_16_9",
-            "style_type": "REALISTIC",
-            "magic_prompt_option": "AUTO",
+        json={
+            "image_request": {
+                "prompt": full_prompt,
+                "model": "V_2",
+                "aspect_ratio": "ASPECT_16_9",
         }},
         timeout=60,
     )
