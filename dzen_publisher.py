@@ -31,7 +31,7 @@ WP_USER      = os.getenv("WP_USER")
 WP_APP_PASS  = os.getenv("WP_APP_PASS")
 WP_CATEGORY  = int(os.getenv("WP_CATEGORY", "1"))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL   = "llama-3.1-8b-instant"
+GROQ_MODEL   = "llama-3.3-70b-versatile"
 
 SHEET_ID = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
 
