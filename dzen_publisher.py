@@ -267,4 +267,11 @@ def publish_next():
 # ─── Точка входа ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    publish_next()
+    try:
+        publish_next()
+    except Exception as e:
+        msg = str(e)
+        if "rate_limit_exceeded" in msg or "429" in msg:
+            print(f"  Лимит токенов Groq исчерпан на сегодня. Следующий запуск по расписанию.")
+            sys.exit(0)
+        raise
