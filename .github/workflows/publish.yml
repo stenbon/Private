@@ -21,14 +21,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install groq requests python-dotenv
+        run: pip install groq requests python-dotenv gspread google-auth
 
       - name: Run publisher
         env:
-          WP_URL:           ${{ secrets.WP_URL }}
-          WP_USER:          ${{ secrets.WP_USER }}
-          WP_APP_PASS:      ${{ secrets.WP_APP_PASS }}
-          WP_CATEGORY:      ${{ secrets.WP_CATEGORY }}
-          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
-        run: python dzen_publisher.py topics.txt
-
+          WP_URL:               ${{ secrets.WP_URL }}
+          WP_USER:              ${{ secrets.WP_USER }}
+          WP_APP_PASS:          ${{ secrets.WP_APP_PASS }}
+          WP_CATEGORY:          ${{ secrets.WP_CATEGORY }}
+          GROQ_API_KEY:         ${{ secrets.GROQ_API_KEY }}
+          GOOGLE_CREDENTIALS:   ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python dzen_publisher.py
