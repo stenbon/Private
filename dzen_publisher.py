@@ -155,10 +155,27 @@ def generate_article(topic):
     html         = re.search(r"<html>(.*?)</html>",                 raw, re.DOTALL).group(1).strip()
     image_prompt = re.search(r"<image_prompt>(.*?)</image_prompt>", raw, re.DOTALL).group(1).strip()
 
-    html = insert_banner(html)
-
+    # Расширяем статью если меньше 1400 слов
     text_only  = re.sub(r'<[^>]+>', '', html)
     word_count = len(text_only.split())
+    if word_count < 1400:
+        print(f"    Объём {word_count} слов — дописываю...")
+        expand = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            max_tokens=4000,
+            messages=[
+                {"role": "system", "content": ARTICLE_SYSTEM},
+                {"role": "user", "content": f"Продолжи и расширь следующую статью. Добавь 3–4 новых раздела <h3> с подразделами <h5> и абзацами <p>. Верни только новые HTML разделы без вступления и заключения:\n\n{html}"},
+            ],
+        )
+        extra = expand.choices[0].message.content.strip()
+        # Вставляем перед последним </p> заключения
+        html = html + "\n" + extra
+        text_only  = re.sub(r'<[^>]+>', '', html)
+        word_count = len(text_only.split())
+
+    html = insert_banner(html)
+
     print(f"    Заголовок: {title}")
     print(f"    Объём: {word_count} слов")
 
