@@ -31,4 +31,5 @@ jobs:
           WP_CATEGORY:          ${{ secrets.WP_CATEGORY }}
           GROQ_API_KEY:         ${{ secrets.GROQ_API_KEY }}
           GOOGLE_CREDENTIALS:   ${{ secrets.GOOGLE_CREDENTIALS }}
+          IDEOGRAM_API_KEY:     ${{ secrets.IDEOGRAM_API_KEY }}
         run: python dzen_publisher.py
