@@ -98,6 +98,28 @@ def make_slug(title):
     return result.strip('-')[:60]
 
 
+FOREIGN_SCRIPT_PATTERN = re.compile(
+    "[" +
+    "一-鿿" +   # CJK Unified Ideographs
+    "㐀-䶿" +   # CJK Extension A
+    "豈-﫿" +   # CJK Compatibility Ideographs
+    "぀-ヿ" +   # Hiragana + Katakana
+    "가-힣" +   # Hangul Syllables
+    "]+"
+)
+
+
+def strip_foreign_scripts(text):
+    """Удаляет случайные вкрапления китайских/японских/корейских иероглифов,
+    которые Groq иногда подмешивает в кириллический текст (наблюдалось на
+    практике: «ИИ<CJK> начал проникать...»). Без этой очистки такие
+    артефакты нарушают правила Дзена и требуют ручной правки постфактум."""
+    cleaned = FOREIGN_SCRIPT_PATTERN.sub('', text)
+    cleaned = re.sub(r'[ \t]{2,}', ' ', cleaned)
+    cleaned = re.sub(r'[ \t]+([,.!?;:])', r'\1', cleaned)
+    return cleaned
+
+
 def insert_banner(html):
     """Вставляет баннер автора после 3-го тега <h5>"""
     parts = re.split(r'(<h5\b[^>]*>.*?</h5>)', html, flags=re.DOTALL)
@@ -156,6 +178,9 @@ def generate_article(topic):
     html         = re.search(r"<html>(.*?)</html>",                 raw, re.DOTALL).group(1).strip()
     image_prompt = re.search(r"<image_prompt>(.*?)</image_prompt>", raw, re.DOTALL).group(1).strip()
 
+    title = strip_foreign_scripts(title)
+    html  = strip_foreign_scripts(html)
+
     # Расширяем статью если меньше 1400 слов
     text_only  = re.sub(r'<[^>]+>', '', html)
     word_count = len(text_only.split())
@@ -169,7 +194,7 @@ def generate_article(topic):
                 {"role": "user", "content": f"Продолжи и расширь следующую статью. Добавь 3–4 новых раздела <h3> с подразделами <h5> и абзацами <p>. Верни только новые HTML разделы без вступления и заключения:\n\n{html}"},
             ],
         )
-        extra = expand.choices[0].message.content.strip()
+        extra = strip_foreign_scripts(expand.choices[0].message.content.strip())
         # Вставляем перед последним </p> заключения
         html = html + "\n" + extra
         text_only  = re.sub(r'<[^>]+>', '', html)
