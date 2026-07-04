@@ -1,12 +1,12 @@
 """
 Dzen Publisher — автоматическая публикация статей в WordPress для Яндекс Дзен
-Пайплайн: Google Sheets (тема) → Groq (текст) → Pollinations.ai (обложка) → WordPress → RSS → Дзен
+Пайплайн: Google Sheets (тема) → Groq (текст) → Ideogram AI (обложка) → WordPress → RSS → Дзен
 
 Требования:
     pip install groq requests python-dotenv gspread google-auth
 
 Настройка GitHub Secrets:
-    WP_URL, WP_USER, WP_APP_PASS, WP_CATEGORY, GROQ_API_KEY, GOOGLE_CREDENTIALS
+    WP_URL, WP_USER, WP_APP_PASS, WP_CATEGORY, GROQ_API_KEY, GOOGLE_CREDENTIALS, IDEOGRAM_API_KEY
 """
 
 import os
@@ -26,12 +26,13 @@ load_dotenv()
 
 # ─── Конфигурация ────────────────────────────────────────────────────────────
 
-WP_URL       = os.getenv("WP_URL", "").rstrip("/")
-WP_USER      = os.getenv("WP_USER")
-WP_APP_PASS  = os.getenv("WP_APP_PASS")
-WP_CATEGORY  = int(os.getenv("WP_CATEGORY", "1"))
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL   = "llama-3.3-70b-versatile"
+WP_URL          = os.getenv("WP_URL", "").rstrip("/")
+WP_USER         = os.getenv("WP_USER")
+WP_APP_PASS     = os.getenv("WP_APP_PASS")
+WP_CATEGORY     = int(os.getenv("WP_CATEGORY", "1"))
+GROQ_API_KEY    = os.getenv("GROQ_API_KEY")
+GROQ_MODEL      = "llama-3.3-70b-versatile"
+IDEOGRAM_API_KEY = os.getenv("IDEOGRAM_API_KEY")
 
 SHEET_ID = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
 
@@ -185,14 +186,36 @@ def generate_article(topic):
 # ─── 2. Генерация обложки ─────────────────────────────────────────────────────
 
 def generate_cover_image(prompt):
-    print("[2/4] Генерирую обложку (Pollinations.ai)...")
+    print("[2/4] Генерирую обложку (Ideogram AI)...")
     full_prompt = f"{prompt}. Photorealistic, editorial style, no text, no watermarks."
-    encoded     = urllib.parse.quote(full_prompt)
-    url         = f"https://image.pollinations.ai/prompt/{encoded}?width=1792&height=1024&nologo=true&model=flux"
-    response    = requests.get(url, timeout=120)
-    print(f"    Статус: {response.status_code}, размер: {len(response.content)} байт")
+    response = requests.post(
+        "https://api.ideogram.ai/v1/ideogram-v3/generate",
+        headers={"Api-Key": IDEOGRAM_API_KEY},
+        json={
+            "prompt": full_prompt,
+            "aspect_ratio": "16x9",
+            "style_type": "REALISTIC",
+            "rendering_speed": "DEFAULT",
+            "magic_prompt": "OFF",
+        },
+        timeout=120,
+    )
     response.raise_for_status()
-    return response.content
+    result = response.json()
+
+    image_obj = result["data"][0]
+    if not image_obj.get("is_image_safe", True) or not image_obj.get("url"):
+        raise RuntimeError(f"Ideogram отклонил генерацию (safety-check): {result}")
+
+    img_response = requests.get(image_obj["url"], timeout=60)
+    img_response.raise_for_status()
+
+    content_type = img_response.headers.get("content-type", "")
+    if not content_type.startswith("image/"):
+        raise RuntimeError(f"Ideogram вернул не изображение (content-type: {content_type})")
+
+    print(f"    Разрешение: {image_obj.get('resolution')}, размер: {len(img_response.content)} байт")
+    return img_response.content
 
 
 # ─── 3. Загрузка обложки в WordPress ─────────────────────────────────────────
@@ -212,6 +235,17 @@ def upload_image_to_wp(image_bytes, filename):
     response.raise_for_status()
     media_id = response.json()["id"]
     print(f"    Media ID: {media_id}")
+
+    try:
+        requests.post(
+            f"{WP_URL}/wp-json/wp/v2/media/{media_id}",
+            json={"caption": "", "description": ""},
+            auth=wp_auth,
+            timeout=30,
+        )
+    except requests.RequestException:
+        pass
+
     return media_id
 
 
