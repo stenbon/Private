@@ -18,6 +18,7 @@ JOBS = [
     (2323, "A modern open-plan office with a large conference table, several empty chairs and only two people actually working attentively at laptops among a dozen unused seats, soft natural window light, muted corporate color palette, symbolizing that only a few companies get real results from technology adoption"),
     (2316, "A split composition: on one side an empty professional photo studio with unused camera and lighting equipment, on the other side a laptop screen glowing with a freshly generated product photo, cool modern office setting, symbolizing AI replacing expensive manual services"),
     (2313, "A minimalist office desk at dusk with a computer screen showing multiple browser windows and a workflow diagram actively updating on its own, no hands on the keyboard, soft blue screen glow lighting the room, symbolizing an autonomous AI agent completing a multi-step task by itself"),
+    (2318, "A translator's desk with three separate monitors side by side, each showing a different translation app actively working on the same paragraph of text, clean modern workspace, soft daylight, muted color palette, symbolizing comparing several AI translation tools side by side"),
 ]
 
 
