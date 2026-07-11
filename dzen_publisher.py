@@ -292,6 +292,10 @@ def upload_image_to_wp(image_bytes, filename):
         auth=wp_auth,
         timeout=60,
     )
+    if response.status_code >= 400:
+        print(f"    WP media upload FAILED: HTTP {response.status_code}")
+        print(f"    Response body: {response.text[:2000]}")
+        print(f"    WP_USER used: {WP_USER!r}")
     response.raise_for_status()
     media_id = response.json()["id"]
     print(f"    Media ID: {media_id}")
@@ -329,6 +333,9 @@ def publish_post(title, html, media_id):
         auth=wp_auth,
         timeout=30,
     )
+    if response.status_code >= 400:
+        print(f"    WP post publish FAILED: HTTP {response.status_code}")
+        print(f"    Response body: {response.text[:2000]}")
     response.raise_for_status()
     post = response.json()
     print(f"    Пост опубликован: {post['link']}")
