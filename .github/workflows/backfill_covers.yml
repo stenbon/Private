@@ -1,0 +1,28 @@
+name: Backfill Covers
+
+on:
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run backfill
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USER: ${{ secrets.WP_USER }}
+          WP_APP_PASS: ${{ secrets.WP_APP_PASS }}
+          IDEOGRAM_API_KEY: ${{ secrets.IDEOGRAM_API_KEY }}
+        run: python backfill_covers.py
