@@ -21,6 +21,17 @@ JOBS = [
 ]
 
 
+def run_diag():
+    print("=== DIAG: /wp-json/diag/v1/auth ===")
+    try:
+        r = requests.get(f"{WP_URL}/wp-json/diag/v1/auth", auth=wp_auth, timeout=30)
+        print(f"HTTP status: {r.status_code}")
+        print(f"Body: {r.text[:1500]}")
+    except Exception as e:
+        print(f"DIAG request failed: {e}")
+    print("=== END DIAG ===")
+
+
 def generate_cover_image(prompt):
     full_prompt = f"{prompt}. Photorealistic, editorial style, no text, no watermarks."
     response = requests.post(
@@ -86,6 +97,11 @@ def set_featured_media(post_id, media_id):
 
 
 def main():
+    run_diag()
+    if os.environ.get("DIAG_ONLY") == "1":
+        print("DIAG_ONLY=1 — завершаю без генерации обложек.")
+        return
+
     failures = []
     for post_id, prompt in JOBS:
         print(f"\n=== Пост {post_id} ===")
