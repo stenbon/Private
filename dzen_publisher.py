@@ -1,3 +1,4 @@
+
 """
 Dzen Publisher — автоматическая публикация статей в WordPress для Яндекс Дзен
 Пайплайн: Google Sheets (тема) → Groq (текст) → Ideogram AI (обложка) → WordPress → RSS → Дзен
@@ -16,6 +17,7 @@ import json
 import time
 import urllib.parse
 import requests
+import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 from groq import Groq
@@ -296,6 +298,7 @@ def upload_image_to_wp(image_bytes, filename):
         print(f"    WP media upload FAILED: HTTP {response.status_code}")
         print(f"    Response body: {response.text[:2000]}")
         print(f"    WP_USER used: {WP_USER!r}")
+        print(f"    WP_USER length: {len(WP_USER)} md5: {hashlib.md5(WP_USER.encode()).hexdigest()}")
     response.raise_for_status()
     media_id = response.json()["id"]
     print(f"    Media ID: {media_id}")
