@@ -335,7 +335,7 @@ def publish_post(title, html, media_id):
 # ─── Самопроверка фактов ──────────────────────────────────────────────────────
 def self_check_facts(html):
     """Просит модель проверить статью на выдуманные/неточные факты и цифры.
-    Ничего не блокирует — только выводит предупреждения в лог."""
+    Возвращает True, если найдены проблемы (тогда пост уйдёт в черновики)."""
     print("[доп] Проверяю факты в статье...")
     text_only = re.sub(r'<[^>]+>', '', html)
     try:
@@ -362,13 +362,16 @@ def self_check_facts(html):
         result = response.choices[0].message.content.strip()
         if result.upper().startswith("OK"):
             print("    ✅ Фактчек не выявил проблем")
+            return False
         else:
-            print("    ⚠️ Фактчек нашёл замечания (публикация продолжится):")
+            print("    ⚠️ Фактчек нашёл замечания (пост уйдёт в черновики):")
             for line in result.splitlines():
                 if line.strip():
                     print(f"       - {line.strip()}")
+            return True
     except Exception as e:
-        print(f"    ⚠️ Фактчек не сработал (пропускаю): {str(e)[:120]}")
+        print(f"    ⚠️ Фактчек не сработал, публикую как обычно: {str(e)[:120]}")
+        return False
 def publish_next():
     topic, row_index = get_next_topic()
     if not topic:
