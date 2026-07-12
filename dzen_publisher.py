@@ -303,8 +303,7 @@ def upload_image_to_wp(image_bytes, filename):
 
 
 # ─── 4. Публикация поста в WordPress ─────────────────────────────────────────
-
-def publish_post(title, html, media_id):
+def publish_post(title, html, media_id, status="publish"):
     print("[4/4] Публикую пост в WordPress...")
     slug = make_slug(title)
     print(f"    Slug: {slug}")
@@ -314,7 +313,7 @@ def publish_post(title, html, media_id):
             "title":          title,
             "content":        html,
             "slug":           slug,
-            "status":         "publish",
+            "status":         status,
             "featured_media": media_id,
             "categories":     [WP_CATEGORY],
             "comment_status": "closed",
@@ -327,9 +326,11 @@ def publish_post(title, html, media_id):
         print(f"    Response body: {response.text[:2000]}")
     response.raise_for_status()
     post = response.json()
-    print(f"    Пост опубликован: {post['link']}")
+    if status == "draft":
+        print(f"    Пост сохранён как черновик: {post['link']}")
+    else:
+        print(f"    Пост опубликован: {post['link']}")
     return post
-
 
 # ─── Главная функция ──────────────────────────────────────────────────────────
 # ─── Самопроверка фактов ──────────────────────────────────────────────────────
