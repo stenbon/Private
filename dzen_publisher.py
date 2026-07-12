@@ -384,15 +384,13 @@ def publish_next():
     print(f"  Старт: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*55}\n")
 
-    article     = generate_article(topic)
-    self_check_facts(article["html"])
-    image_bytes = generate_cover_image(article["image_prompt"])
-    filename    = f"cover_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-    media_id    = upload_image_to_wp(image_bytes, filename)
-    post        = publish_post(article["title"], article["html"], media_id)
-
-    mark_published(row_index, post["link"])
-    print(f"\n✓ Готово! Статус в таблице обновлён.\n")
+    article      = generate_article(topic)
+    has_problems = self_check_facts(article["html"])
+    image_bytes  = generate_cover_image(article["image_prompt"])
+    filename     = f"cover_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+    media_id     = upload_image_to_wp(image_bytes, filename)
+    post_status  = "draft" if has_problems else "publish"
+    post         = publish_post(article["title"], article["html"], media_id, status=post_status)
 
 
 # ─── Точка входа ─────────────────────────────────────────────────────────────
