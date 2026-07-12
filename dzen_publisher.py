@@ -204,48 +204,32 @@ def generate_article(topic):
     title        = title_m.group(1).strip()
     html         = html_m.group(1).strip()
     image_prompt = img_m.group(1).strip()
+    title = strip_foreign_scripts(title)
+    html  = strip_foreign_scripts(html)
+
+    # Расширяем статью если меньше 1400 слов
+    text_only  = re.sub(r'<[^>]+>', '', html)
+    word_count = len(text_only.split())
+    if word_count < 1400:
+        print(f"    Объём {word_count} слов — дописываю...")
+        expand = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            max_tokens=4000,
+            messages=[
+                {"role": "system", "content": ARTICLE_SYSTEM},
+                {"role": "user", "content": f"Продолжи и расширь следующую статью. Добавь 3–4 новых раздела с заголовком <h3> и 2–4 абзацами <p> под каждым (без подразделов, без <h4>/<h5>/<h6>). Верни только новые HTML разделы без вступления и заключения:\n\n{html}"},
+            ],
+        )
         extra = strip_foreign_scripts(expand.choices[0].message.content.strip())
         # Вставляем перед последним </p> заключения
         html = html + "\n" + extra
         text_only  = re.sub(r'<[^>]+>', '', html)
-        word_count = len(text_only.split()
+        word_count = len(text_only.split())
 
     html = insert_banner(html)
-
     print(f"    Заголовок: {title}")
     print(f"    Объём: {word_count} слов")
-
     return {"title": title, "html": html, "image_prompt": image_prompt}
-
-
-# ─── 1.5. Самопроверка фактов ──────────────────────────────────────────────
-
-def self_check_facts(html):
-    """Просит модель выписать проверяемые факты (числа, даты, названия,
-    версии, цены) из готовой статьи и пометить уверенность по каждому.
-    НЕ блокирует публикацию — результат печатается в лог запуска Actions
-    для последующего ручного разбора."""
-    try:
-        text_only = re.sub(r'<[^>]+>', ' ', html)
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            max_tokens=1000,
-            messages=[
-                {"role": "system", "content": "Ты — фактчекер. Не выдумывай новых фактов, работай только с тем, что дано."},
-                {"role": "user", "content": f"""Из текста ниже выпиши списком все проверяемые утверждения: числа, даты, цены, названия сервисов, версии. Для каждого — метка [проверено] (общеизвестно) / [не проверено] (нужна сверка с источником) / [подозрительно] (похоже на выдумку). Если фактов нет — напиши "Фактов не найдено".
-
-Текст:
-{text_only[:6000]}"""},
-            ],
-        )
-        report = response.choices[0].message.content.strip()
-        print("\n[Самопроверка фактов]")
-        print(report)
-        return report
-    except Exception as e:
-        print(f"[Самопроверка фактов] пропущена из-за ошибки: {e}")
-        return None
-
 
 # ─── 2. Генерация обложки ─────────────────────────────────────────────────────
 
