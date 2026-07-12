@@ -208,7 +208,7 @@ def generate_article(topic):
         # Вставляем перед последним </p> заключения
         html = html + "\n" + extra
         text_only  = re.sub(r'<[^>]+>', '', html)
-        word_count = len(text_only.split())
+        word_count = len(text_only.split()
 
     html = insert_banner(html)
 
