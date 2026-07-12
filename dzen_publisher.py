@@ -207,12 +207,12 @@ def generate_article(topic):
     title = strip_foreign_scripts(title)
     html  = strip_foreign_scripts(html)
 
-   # Расширяем статью, пока не наберётся нужный объём (макс. 3 попытки)
+   # Расширяем статью, пока не наберётся нужный объём по Дзену (макс. 3 попытки)
     text_only  = re.sub(r'<[^>]+>', '', html)
-    word_count = len(text_only.split())
     char_count = len(text_only)
+    word_count = len(text_only.split())
     attempts = 0
-    while (word_count < 1400 or char_count < 3500) and attempts < 3:
+    while char_count < 3500 and attempts < 3:
         attempts += 1
         print(f"    Объём {word_count} слов / {char_count} знаков — дописываю (попытка {attempts}/3)...")
         expand = groq_client.chat.completions.create(
@@ -226,10 +226,10 @@ def generate_article(topic):
         extra = strip_foreign_scripts(expand.choices[0].message.content.strip())
         html = html + "\n" + extra
         text_only  = re.sub(r'<[^>]+>', '', html)
-        word_count = len(text_only.split())
         char_count = len(text_only)
+        word_count = len(text_only.split())
 
-    if word_count < 1400 or char_count < 3500:
+    if char_count < 3500:
         print(f"    ⚠️ После {attempts} попыток объём всё ещё мал: {word_count} слов / {char_count} знаков. Публикую как есть.")
     else:
         print(f"    ✅ Объём достаточный: {word_count} слов / {char_count} знаков")
