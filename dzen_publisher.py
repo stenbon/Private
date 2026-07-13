@@ -378,13 +378,15 @@ def self_check_facts(html):
     try:
         response = anthropic_client.messages.create(
             model=ANTHROPIC_MODEL,
-            max_tokens=1200,
+            max_tokens=4000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             system=(
                 "Ты — строгий фактчекер. В тексте есть конкретные цифры, проценты, "
                 "статистика. Для каждой такой цифры сделай web_search и проверь, "
                 "существует ли реально такое исследование/данные с такими значениями. "
-                "Не проверяй общие утверждения без цифр."
+                "Не проверяй общие утверждения без цифр. "
+                "ВАЖНО: после всех поисков ты ОБЯЗАН написать финальный текстовый вердикт "
+                "(OK или список проблем) — это не опционально."
             ),
             messages=[
                 {"role": "user", "content": f"""Проверь через веб-поиск каждую цифру и статистику в этой статье.
@@ -399,6 +401,11 @@ def self_check_facts(html):
             ],
         )
         result = _extract_text(response).strip()
+        if not result:
+            print("    ⚠️ Фактчек не дал текстового ответа (закончились токены на поиск).")
+            print(f"    stop_reason: {response.stop_reason}, usage: {response.usage}")
+            print("    Публикую как черновик на всякий случай — нужна ручная проверка.")
+            return True
         if result.upper().startswith("OK"):
             print("    ✅ Фактчек через веб-поиск не выявил проблем")
             return False
