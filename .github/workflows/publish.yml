@@ -1,5 +1,7 @@
 name: Dzen Auto Publisher
-
+concurrency:
+  group: dzen-publisher
+  cancel-in-progress: false
 on:
   schedule:
     - cron: '0 22 * * *'   # 01:00 МСК
