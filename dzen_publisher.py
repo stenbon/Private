@@ -44,6 +44,8 @@ SHEET_ID = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
 AUTHOR_BANNER = (
     '<img src="https://000l.ru/wp-content/uploads/2026/06/'
     'ChatGPT-Image-5-июн.-2026-г.-19_59_37.png" '
+    'alt="Иллюстрация: искусственный интеллект в повседневных задачах" '
+    'title="Иллюстрация: искусственный интеллект в повседневных задачах" '
     'style="width:100%;display:block;margin:20px 0;" />'
 )
 
@@ -293,23 +295,23 @@ def generate_cover_image(prompt):
     img_response = requests.get(image_obj["url"], timeout=60)
     img_response.raise_for_status()
 
-    content_type = img_response.headers.get("content-type", "")
+    content_type = img_response.headers.get("content-type", "").split(";")[0].strip()
     if not content_type.startswith("image/"):
         raise RuntimeError(f"Ideogram вернул не изображение (content-type: {content_type})")
 
-    print(f"    Разрешение: {image_obj.get('resolution')}, размер: {len(img_response.content)} байт")
-    return img_response.content
+    print(f"    Разрешение: {image_obj.get('resolution')}, размер: {len(img_response.content)} байт, формат: {content_type}")
+    return img_response.content, content_type
 
 
 # ─── 3. Загрузка обложки в WordPress ─────────────────────────────────────────
 
-def upload_image_to_wp(image_bytes, filename):
+def upload_image_to_wp(image_bytes, filename, content_type="image/jpeg"):
     print("[3/4] Загружаю обложку в WordPress...")
     response = requests.post(
         f"{WP_URL}/wp-json/wp/v2/media",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Type": "image/jpeg",
+            "Content-Type": content_type,
         },
         data=image_bytes,
         auth=wp_auth,
@@ -427,12 +429,18 @@ def publish_next():
     mark_published(row_index, "В работе...")  # бронируем строку СРАЗУ, до генерации
 
     try:
-        article     = generate_article(topic)
-        image_bytes = generate_cover_image(article["image_prompt"])
-        filename    = f"cover_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-        media_id    = upload_image_to_wp(image_bytes, filename)
-        post        = publish_post(article["title"], article["html"], media_id)
-        mark_published(row_index, post["link"])
+        article = generate_article(topic)
+        needs_review = self_check_facts(article["html"])
+        image_bytes, image_content_type = generate_cover_image(article["image_prompt"])
+        ext = "png" if "png" in image_content_type else "jpg"
+        filename = f"cover_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+        media_id = upload_image_to_wp(image_bytes, filename, content_type=image_content_type)
+        status = "draft" if needs_review else "publish"
+        post = publish_post(article["title"], article["html"], media_id, status=status)
+        if needs_review:
+            mark_published(row_index, f"ЧЕРНОВИК (нужна проверка фактов): {post['link']}")
+        else:
+            mark_published(row_index, post["link"])
     except Exception:
         mark_published(row_index, "ОШИБКА — требует ручной проверки")
         raise
