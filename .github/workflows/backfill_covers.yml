@@ -26,3 +26,4 @@ jobs:
           WP_APP_PASS: ${{ secrets.WP_APP_PASS }}
           IDEOGRAM_API_KEY: ${{ secrets.IDEOGRAM_API_KEY }}
         run: python backfill_covers.py
+# scope-check 1785094460
