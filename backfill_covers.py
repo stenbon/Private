@@ -14,11 +14,21 @@ IDEOGRAM_API_KEY = os.environ["IDEOGRAM_API_KEY"]
 
 wp_auth = (WP_USER, WP_APP_PASS)
 
+# 2496/2501/2503 уже обработаны раньше (см. историю коммитов) — оставлены
+# закомментированными для справки, НЕ перезапускать, чтобы не перегенерировать
+# им обложки заново и не жечь квоту Ideogram зря.
 JOBS = [
-    (2496, "A laptop screen glowing in a dim home office late at night, showing slide thumbnails of a pitch deck being assembled automatically, scattered coffee cup and notebook nearby, warm desk lamp light, photorealistic editorial style"),
-    (2501, "A waveform audio editor on a computer screen with sections highlighted and being trimmed automatically, microphone and headphones on the desk beside it, clean modern home studio, soft daylight, photorealistic editorial style"),
-    (2503, "A video editing screen showing a paused frame with multiple subtitle language tracks listed in a side panel, world map faintly visible on a second monitor, modern workspace, cool soft lighting, photorealistic editorial style"),
+    # (2496, "..."),  # уже сделано
+    # (2501, "..."),  # уже сделано
+    # (2503, "..."),  # уже сделано
+    (2505, "A laptop screen during a video call showing a live meeting transcript scrolling with speaker labels, blurred colleagues in the background on a video grid, warm modern office lighting, photorealistic editorial style"),
 ]
+
+# Посты, для которых помимо обложки нужно ещё заменить содержимое (одноразовый
+# фикс после инцидента 26.07.2026 — короткая статья без структуры).
+CONTENT_REPLACEMENTS = {
+    2505: "post_2505_content.html",
+}
 
 def run_diag():
     try:
@@ -66,12 +76,19 @@ def upload_image_to_wp(image_bytes, filename, content_type="image/jpeg"):
     return media_id
 
 def set_featured_media(post_id, media_id):
+    payload = {"featured_media": media_id}
+    if post_id in CONTENT_REPLACEMENTS:
+        with open(CONTENT_REPLACEMENTS[post_id], encoding="utf-8") as f:
+            payload["content"] = f.read()
+        print(f"  Post {post_id}: содержимое будет заменено из {CONTENT_REPLACEMENTS[post_id]}")
     response = requests.post(
         f"{WP_URL}/wp-json/wp/v2/posts/{post_id}",
-        json={"featured_media": media_id},
+        json=payload,
         auth=wp_auth,
         timeout=30,
     )
+    if response.status_code >= 400:
+        print(f"  UPDATE FAILED: HTTP {response.status_code} — {response.text[:500]}")
     response.raise_for_status()
     print(f"  Post {post_id}: featured_media установлен на {media_id}")
 
