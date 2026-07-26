@@ -420,6 +420,32 @@ def self_check_facts(html):
     except Exception as e:
         print(f"    ⚠️ Фактчек не сработал — публикую как черновик на всякий случай: {str(e)[:120]}")
         return True  # при ошибке фактчека — лучше перестраховаться и не публиковать сразу
+MIN_WORDS = 1200  # ниже — жёсткий отказ от публикации (черновик), даже если фактчек OK
+
+
+def check_structure(html):
+    """Жёсткая проверка объёма и схемы заголовков перед публикацией.
+    Появилась после инцидента с постом 2505 (26.07.2026): статья в 450 слов
+    и 3×<h2> без единого <h3> ушла в publish, потому что self_check_facts
+    проверяет только цифры/факты, а не объём и структуру."""
+    reasons = []
+    text_only = re.sub(r'<[^>]+>', '', html)
+    word_count = len(text_only.split())
+    h2_count = len(re.findall(r'<h2\b', html, re.IGNORECASE))
+    h3_count = len(re.findall(r'<h3\b', html, re.IGNORECASE))
+
+    if word_count < MIN_WORDS:
+        reasons.append(f"объём {word_count} слов < {MIN_WORDS}")
+    if h2_count != 1:
+        reasons.append(f"должен быть ровно 1×<h2>, найдено {h2_count}")
+    if h3_count < 3:
+        reasons.append(f"должно быть минимум 3×<h3> (обычно 5), найдено {h3_count}")
+    if re.search(r'<h[456]\b', html, re.IGNORECASE):
+        reasons.append("найден запрещённый <h4>/<h5>/<h6>")
+
+    return (len(reasons) == 0), reasons
+
+
 def publish_next():
     topic, row_index = get_next_topic()
     if not topic:
@@ -431,6 +457,14 @@ def publish_next():
     try:
         article = generate_article(topic)
         needs_review = self_check_facts(article["html"])
+
+        structure_ok, structure_reasons = check_structure(article["html"])
+        if not structure_ok:
+            print("    ⚠️ Жёсткая проверка объёма/структуры не пройдена (пост уйдёт в черновики):")
+            for reason in structure_reasons:
+                print(f"       - {reason}")
+            needs_review = True
+
         image_bytes, image_content_type = generate_cover_image(article["image_prompt"])
         ext = "png" if "png" in image_content_type else "jpg"
         filename = f"cover_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
@@ -438,7 +472,8 @@ def publish_next():
         status = "draft" if needs_review else "publish"
         post = publish_post(article["title"], article["html"], media_id, status=status)
         if needs_review:
-            mark_published(row_index, f"ЧЕРНОВИК (нужна проверка фактов): {post['link']}")
+            reason_note = "; ".join(structure_reasons) if structure_reasons else "проверка фактов"
+            mark_published(row_index, f"ЧЕРНОВИК (нужна проверка: {reason_note}): {post['link']}")
         else:
             mark_published(row_index, post["link"])
     except Exception:
