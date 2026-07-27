@@ -1,9 +1,6 @@
 name: Revert News To Draft
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/revert_news_to_draft.yml'
 jobs:
   revert:
     runs-on: ubuntu-latest
