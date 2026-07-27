@@ -2,9 +2,6 @@ name: Delete Duplicates
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/delete_duplicates.yml'
 
 jobs:
   delete:
