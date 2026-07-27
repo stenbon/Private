@@ -1,0 +1,31 @@
+name: Publish New Articles
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/publish_new_articles.yml'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run publish
+        env:
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USER: ${{ secrets.WP_USER }}
+          WP_APP_PASS: ${{ secrets.WP_APP_PASS }}
+          IDEOGRAM_API_KEY: ${{ secrets.IDEOGRAM_API_KEY }}
+        run: python publish_new_articles.py
