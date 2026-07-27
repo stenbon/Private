@@ -2,9 +2,6 @@ name: Unpublish Duplicates
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/unpublish_duplicates.yml'
 
 jobs:
   unpublish:
