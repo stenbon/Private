@@ -2,9 +2,6 @@ name: Publish New Articles
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/publish_new_articles.yml'
 
 jobs:
   publish:
