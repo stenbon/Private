@@ -1,7 +1,11 @@
 
 """
 Dzen Publisher — автоматическая публикация статей в WordPress для Яндекс Дзен
-Пайплайн: Google Sheets (тема) → Groq (текст) → Ideogram AI (обложка) → WordPress → RSS → Дзен
+Пайплайн: Google Sheets (тема) → groq/compound (текст + встроенный веб-поиск) → Ideogram AI (обложка) → WordPress → RSS → Дзен
+
+05.08.2026: генератор/фактчек переведены с Anthropic (claude-sonnet-5) на groq/compound —
+счёт в 3$ за ночь на Anthropic API был признан неприемлемым. ANTHROPIC_API_KEY больше не
+нужен, секрет можно оставить неиспользуемым или удалить из GitHub Secrets.
 
 Требования:
     pip install groq requests python-dotenv gspread google-auth
@@ -21,7 +25,6 @@ import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 from groq import Groq
-from anthropic import Anthropic
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -34,9 +37,17 @@ WP_USER         = os.getenv("WP_USER")
 WP_APP_PASS     = os.getenv("WP_APP_PASS")
 WP_CATEGORY     = int(os.getenv("WP_CATEGORY", "1"))
 GROQ_API_KEY    = os.getenv("GROQ_API_KEY")
-GROQ_MODEL      = "llama-3.3-70b-versatile"
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-ANTHROPIC_MODEL   = "claude-sonnet-5"
+# 05.08.2026: перешли с Anthropic (claude-sonnet-5) на groq/compound — по прямому
+# указанию Владимира после счёта в 3$ за ночь на Anthropic API. groq/compound —
+# агентная система Groq со встроенным веб-поиском (через Tavily), поэтому
+# self_check_facts()/fix_flagged_issues() продолжают реально проверять цифры
+# через поиск, а не пишут по памяти — это было условием переключения (см.
+# обсуждение вариантов: чистый Kimi K2/DeepSeek без своего поиска отклонили,
+# т.к. они на Groq вообще не хостятся, а на своих API/сторонних хостерах
+# лишились бы фактчека). Если понадобится когда-то откатить — прежний код
+# использовал anthropic_client с ANTHROPIC_MODEL="claude-sonnet-5", tools=
+# [{"type": "web_search_20250305", "name": "web_search"}], см. git-историю.
+GROQ_MODEL      = "groq/compound"
 IDEOGRAM_API_KEY = os.getenv("IDEOGRAM_API_KEY")
 
 SHEET_ID = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
@@ -51,13 +62,23 @@ AUTHOR_BANNER = (
 
 wp_auth     = (WP_USER, WP_APP_PASS)
 groq_client = Groq(api_key=GROQ_API_KEY)
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def _extract_text(response):
-    """Собирает финальный текст ответа Anthropic из всех text-блоков
-    (между ними могут быть блоки web_search_tool_result — их пропускаем)."""
-    return "".join(block.text for block in response.content if block.type == "text")
+def _groq_complete(system_prompt, user_content, max_tokens=8000):
+    """Единая обёртка над groq/compound (OpenAI-совместимый chat.completions).
+    Возвращает финальный синтезированный текст ответа (после всех внутренних
+    вызовов веб-поиска, которые compound делает сам на сервере — см.
+    https://console.groq.com/docs/tool-use/built-in-tools/web-search).
+    max_tokens ограничен потолком compound в 8192 (see console.groq.com/docs/models)."""
+    response = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        max_tokens=min(max_tokens, 8192),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    return response.choices[0].message.content or ""
 
 
 # ─── Google Sheets ────────────────────────────────────────────────────────────
@@ -191,24 +212,16 @@ def generate_article(topic):
 - После факта в скобках коротко укажи источник: (по данным РБК), (Habr), (исследование MIT) и т.п."""
 
     def _request():
-        response = anthropic_client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=8000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": f"""Напиши статью для Яндекс Дзен на тему: {topic}
+        user_content = f"""Напиши статью для Яндекс Дзен на тему: {topic}
 
-Сначала поищи актуальные данные и цифры по теме через web_search (2-3 запроса достаточно),
+Сначала поищи актуальные данные и цифры по теме через веб-поиск (2-3 запроса достаточно),
 затем напиши статью, используя только то, что реально нашёл.
 
 Верни ответ строго в таком формате (без лишних слов до и после):
 <title>заголовок 40–60 символов, конкретный, отражает суть темы. ЗАПРЕЩЕНО: восклицательный или вопросительный знак в конце, троеточие, КАПС, слова «шок»/«сенсация», приманки-императивы («смотри», «узнаешь только тут», «не поверишь»), преувеличения без конкретики («невероятный», «сумасшедший»)</title>
 <html>полный HTML текст статьи — строго не менее 1500 слов, развёрнуто с примерами</html>
-<image_prompt>описание обложки на английском, фотореализм, без текста, без красных обводок/стрелок/восклицательных знаков, без гипертрофированной мимики лиц, 16:9</image_prompt>"""},
-            ],
-        )
-        return _extract_text(response)
+<image_prompt>описание обложки на английском, фотореализм, без текста, без красных обводок/стрелок/восклицательных знаков, без гипертрофированной мимики лиц, 16:9</image_prompt>"""
+        return _groq_complete(system_prompt, user_content, max_tokens=8000)
 
     raw = _request()
     title_m = re.search(r"<title>(.*?)</title>", raw, re.DOTALL)
@@ -244,16 +257,8 @@ def generate_article(topic):
     while char_count < 3500 and attempts < 3:
         attempts += 1
         print(f"    Объём {word_count} слов / {char_count} знаков — дописываю (попытка {attempts}/3)...")
-        expand = anthropic_client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=4000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": f"Продолжи и расширь следующую статью. Если нужны новые цифры или примеры — сначала найди их через web_search. Добавь 3–4 новых раздела с заголовком <h3> и 2–4 абзацами <p> под каждым (без подразделов, без <h4>/<h5>/<h6>). Верни только новые HTML разделы без вступления и заключения:\n\n{html}"},
-            ],
-        )
-        extra = strip_foreign_scripts(_extract_text(expand).strip())
+        expand_user = f"Продолжи и расширь следующую статью. Если нужны новые цифры или примеры — сначала найди их через веб-поиск. Добавь 3–4 новых раздела с заголовком <h3> и 2–4 абзацами <p> под каждым (без подразделов, без <h4>/<h5>/<h6>). Верни только новые HTML разделы без вступления и заключения:\n\n{html}"
+        extra = strip_foreign_scripts(_groq_complete(system_prompt, expand_user, max_tokens=4000).strip())
         html = html + "\n" + extra
         text_only  = re.sub(r'<[^>]+>', '', html)
         char_count = len(text_only)
@@ -381,22 +386,17 @@ def self_check_facts(html):
     print("[доп] Проверяю факты в статье через веб-поиск...")
     text_only = re.sub(r'<[^>]+>', '', html)
     try:
-        response = anthropic_client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=4000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            system=(
-                "Ты — строгий фактчекер. В тексте есть конкретные цифры, проценты, "
-                "статистика. Для каждой такой цифры сделай web_search и проверь, "
-                "существует ли реально такое исследование/данные с такими значениями, "
-                "и что метрика (название показателя) в тексте совпадает с метрикой "
-                "в источнике, а не подменена похожей по смыслу. "
-                "Не проверяй общие утверждения без цифр. "
-                "ВАЖНО: после всех поисков ты ОБЯЗАН написать финальный текстовый вердикт "
-                "(OK или список проблем) — это не опционально."
-            ),
-            messages=[
-                {"role": "user", "content": f"""Проверь через веб-поиск каждую цифру и статистику в этой статье.
+        fact_system = (
+            "Ты — строгий фактчекер. В тексте есть конкретные цифры, проценты, "
+            "статистика. Для каждой такой цифры сделай веб-поиск и проверь, "
+            "существует ли реально такое исследование/данные с такими значениями, "
+            "и что метрика (название показателя) в тексте совпадает с метрикой "
+            "в источнике, а не подменена похожей по смыслу. "
+            "Не проверяй общие утверждения без цифр. "
+            "ВАЖНО: после всех поисков ты ОБЯЗАН написать финальный текстовый вердикт "
+            "(OK или список проблем) — это не опционально."
+        )
+        fact_user = f"""Проверь через веб-поиск каждую цифру и статистику в этой статье.
 
 Если все цифры подтвердились реальными источниками, и метрики не перепутаны — ответь ровно: OK
 
@@ -406,13 +406,10 @@ def self_check_facts(html):
 указанием, что именно не так и какое верное значение/метрика нашлась в источнике.
 
 Текст статьи:
-{text_only[:6000]}"""},
-            ],
-        )
-        result = _extract_text(response).strip()
+{text_only[:6000]}"""
+        result = _groq_complete(fact_system, fact_user, max_tokens=4000).strip()
         if not result:
             print("    ⚠️ Фактчек не дал текстового ответа (закончились токены на поиск).")
-            print(f"    stop_reason: {response.stop_reason}, usage: {response.usage}")
             print("    Публикую как черновик на всякий случай — нужна ручная проверка.")
             return True, ""
         if result.upper().startswith("OK"):
@@ -438,32 +435,25 @@ def fix_flagged_issues(html, problems):
     не удалось / выглядит подозрительно)."""
     print("[доп] Пробую исправить найденные фактчеком проблемы (1 попытка)...")
     try:
-        response = anthropic_client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=6000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            system=(
-                "Ты редактируешь готовую статью для Дзен, чтобы исправить "
-                "конкретные фактические проблемы, которые нашёл фактчекер. "
-                "Для каждой проблемы: через web_search найди точное значение "
-                "метрики (число И название метрики дословно, не заменяй "
-                "похожим по смыслу словом) и исправь текст на месте. Если "
-                "подтвердить цифру не получается вообще — убери её из текста, "
-                "перепиши фразу без конкретного числа, сохранив смысл абзаца. "
-                "Не трогай части текста, к которым нет претензий. Верни ПОЛНЫЙ "
-                "исправленный HTML статьи целиком (все разделы от вступления "
-                "до заключения), без комментариев до/после, в тех же тегах "
-                "<h2>/<h3>/<p>/<ul>/<li>, что и в исходнике."
-            ),
-            messages=[
-                {"role": "user", "content": f"""Найденные фактчеком проблемы:
+        fix_system = (
+            "Ты редактируешь готовую статью для Дзен, чтобы исправить "
+            "конкретные фактические проблемы, которые нашёл фактчекер. "
+            "Для каждой проблемы: через веб-поиск найди точное значение "
+            "метрики (число И название метрики дословно, не заменяй "
+            "похожим по смыслу словом) и исправь текст на месте. Если "
+            "подтвердить цифру не получается вообще — убери её из текста, "
+            "перепиши фразу без конкретного числа, сохранив смысл абзаца. "
+            "Не трогай части текста, к которым нет претензий. Верни ПОЛНЫЙ "
+            "исправленный HTML статьи целиком (все разделы от вступления "
+            "до заключения), без комментариев до/после, в тех же тегах "
+            "<h2>/<h3>/<p>/<ul>/<li>, что и в исходнике."
+        )
+        fix_user = f"""Найденные фактчеком проблемы:
 {problems}
 
 Полный текст статьи для исправления:
-{html}"""},
-            ],
-        )
-        fixed = strip_foreign_scripts(_extract_text(response).strip())
+{html}"""
+        fixed = strip_foreign_scripts(_groq_complete(fix_system, fix_user, max_tokens=6000).strip())
         original_words = len(re.sub(r'<[^>]+>', '', html).split())
         fixed_words = len(re.sub(r'<[^>]+>', '', fixed).split())
         # защита от пустого/усечённого ответа — не даём испорченному варианту
