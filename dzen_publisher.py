@@ -504,6 +504,38 @@ def check_structure(html):
     return (len(reasons) == 0), reasons
 
 
+SUSPICIOUS_ARTIFACT_PATTERNS = [
+    r"\bWait,? I need to\b",
+    r"\bLet me (fix|reconsider|re-?check|rewrite)\b",
+    r"shouldn'?t be\b.{0,40}\bagain\b",
+    r"\bper instructions\b",
+    r"\berroneous\b",
+    r"\bI already made\b",
+    r"<h[1-6][^>]*style=[\"']display:\s*none[\"'][^>]*>\s*</h[1-6]>",
+    r"\bas an AI\b",
+    r"\bas a language model\b",
+    r"\(this conclusion section\)",
+]
+
+
+def check_for_leaked_artifacts(html):
+    """Проверка на утёкшие в текст статьи артефакты генерации — модель иногда
+    вслух проговаривает самокоррекцию прямо внутри <html>...</html> (например,
+    "Wait, I need to check structure... Let me fix...") вместо того, чтобы
+    молча переписать текст, до того как отдать финальный ответ. self_check_facts
+    проверяет только цифры, а check_structure — только объём/заголовки: оба
+    пропускают такие вставки, т.к. они не портят ни счётчик слов, ни разметку.
+
+    Найдено вручную 05.08.2026 (пользователь дал доступ к репозиторию и
+    попросил разобраться, откуда в постах 2538 и 2546 взялись a) целый абзац
+    рассуждений модели между <h2> и <p> и b) пустой скрытый <h2 style=
+    "display:none"> — оба поста ушли в publish, т.к. проходили и фактчек,
+    и check_structure. Оба вручную исправлены на сайте; это — защита от
+    повтора на будущих прогонах."""
+    hits = [p for p in SUSPICIOUS_ARTIFACT_PATTERNS if re.search(p, html, re.IGNORECASE)]
+    return (len(hits) == 0), hits
+
+
 def publish_next():
     topic, row_index = get_next_topic()
     if not topic:
@@ -526,6 +558,15 @@ def publish_next():
             print("    ⚠️ Жёсткая проверка объёма/структуры не пройдена (пост уйдёт в черновики):")
             for reason in structure_reasons:
                 print(f"       - {reason}")
+            needs_review = True
+
+        artifacts_ok, artifact_hits = check_for_leaked_artifacts(article["html"])
+        if not artifacts_ok:
+            print("    ⚠️ Найдены признаки утёкших артефактов генерации — рассуждения модели "
+                  "или мусорные теги в тексте (пост уйдёт в черновики):")
+            for hit in artifact_hits:
+                print(f"       - паттерн сработал: {hit}")
+            structure_reasons = structure_reasons + [f"подозрительный артефакт в тексте ({h})" for h in artifact_hits]
             needs_review = True
 
         image_bytes, image_content_type = generate_cover_image(article["image_prompt"])
