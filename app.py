@@ -66,7 +66,7 @@ WP_USER         = os.getenv("WP_USER")
 WP_APP_PASS     = os.getenv("WP_APP_PASS")
 WP_CATEGORY     = int(os.getenv("WP_CATEGORY", "1"))
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL    = "gemini-2.5-flash"
+GEMINI_MODEL    = "gemini-3.5-flash"
 FAL_API_KEY     = os.getenv("FAL_API_KEY")
 
 SHEET_ID     = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
