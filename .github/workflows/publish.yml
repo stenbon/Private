@@ -5,7 +5,7 @@ concurrency:
 on:
   push:
     branches: [main]
-    paths: [".github/workflows/publish.yml"]
+    paths: [".github/workflows/publish.yml", "dzen_publisher.py"]
   schedule:
     # Слоты синхронизированы с 000l-dzen-daily-batch (02:00/09:00/19:00 МСК = UTC+3)
     - cron: '0 23 * * *'   # 02:00 МСК
