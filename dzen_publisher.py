@@ -78,16 +78,40 @@ def _groq_complete(system_prompt, user_content, max_tokens=8000):
     Возвращает финальный синтезированный текст ответа (после всех внутренних
     вызовов веб-поиска, которые compound делает сам на сервере — см.
     https://console.groq.com/docs/tool-use/built-in-tools/web-search).
-    max_tokens ограничен потолком compound в 8192 (see console.groq.com/docs/models)."""
-    response = groq_client.chat.completions.create(
-        model=GROQ_MODEL,
-        max_tokens=min(max_tokens, 8192),
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-    )
-    return response.choices[0].message.content or ""
+    max_tokens ограничен потолком compound в 8192 (see console.groq.com/docs/models).
+
+    12.08.2026: добавлен retry с понижением max_tokens при ошибке 413/429
+    ("request_too_large" / rate limit) — на практике встретилось после
+    восстановления пайплайна из git-истории, причина не выяснена окончательно
+    (либо снижение TPM-лимита на стороне Groq, либо коллизия с параллельным
+    Cowork-прогоном, использующим тот же аккаунт groq/compound в то же окно).
+    Ретрай — практическое смягчение симптома, не подтверждённое устранение
+    первопричины."""
+    import groq as _groq_module
+
+    attempt_tokens = min(max_tokens, 8192)
+    last_err = None
+    for attempt in range(3):
+        try:
+            response = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                max_tokens=attempt_tokens,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+            )
+            return response.choices[0].message.content or ""
+        except _groq_module.APIStatusError as e:
+            last_err = e
+            if e.status_code in (413, 429) and attempt < 2:
+                attempt_tokens = max(1500, attempt_tokens // 2)
+                print(f"[groq] {e.status_code} ({e.status_code == 413 and 'request_too_large' or 'rate_limit'}), "
+                      f"повтор через 20с с max_tokens={attempt_tokens} (попытка {attempt + 2}/3)...")
+                time.sleep(20)
+                continue
+            raise
+    raise last_err
 
 
 # ─── Google Sheets ────────────────────────────────────────────────────────────
