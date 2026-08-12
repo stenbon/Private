@@ -3,6 +3,9 @@ concurrency:
   group: dzen-publisher
   cancel-in-progress: false
 on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/publish.yml"]
   schedule:
     # Слоты синхронизированы с 000l-dzen-daily-batch (02:00/09:00/19:00 МСК = UTC+3)
     - cron: '0 23 * * *'   # 02:00 МСК
