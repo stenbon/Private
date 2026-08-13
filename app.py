@@ -119,7 +119,15 @@ def _gemini_complete(system_prompt, user_content, max_tokens=8000):
                 model=GEMINI_MODEL,
                 system_instruction=system_prompt,
                 input=user_content,
-                generation_config={"max_output_tokens": min(max_tokens, 65536)},
+                generation_config={
+                    "max_output_tokens": min(max_tokens, 65536),
+                    # 13.08.2026: gemini-3.5-flash — think-модель, по умолчанию
+                    # тратит бюджет ответа на видимые рассуждения-черновик
+                    # ("Section 4:", "Total Word Count check... Perfect!" и т.п.)
+                    # вместо готового текста, из-за чего парсинг тегов падает.
+                    # thinking_level="low" резко снижает этот шум.
+                    "thinking_level": "low",
+                },
                 store=False,
             )
             return interaction.output_text or ""
@@ -296,15 +304,17 @@ gemini-3.5-flash вместо тегов начала выдавать черн�
 <title>заголовок 40–60 символов, конкретный, отражает суть темы. ЗАПРЕЩЕНО: восклицательный или вопросительный знак в конце, троеточие, КАПС, слова «шок»/«сенсация», приманки-императивы («смотри», «узнаешь только тут», «не поверишь»), преувеличения без конкретики («невероятный», «сумасшедший»)</title>
 <html>полный HTML текст статьи — строго не менее 1500 слов, развёрнуто с примерами</html>
 <image_prompt>описание обложки на английском, фотореализм, без текста, без красных обводок/стрелок/восклицательных знаков, без гипертрофированной мимики лиц, 16:9</image_prompt>"""
-        return _gemini_complete(system_prompt, user_content, max_tokens=16000)
+        return _gemini_complete(system_prompt, user_content, max_tokens=24000)
 
     raw = _request()
     title_m = re.search(r"<title>(.*?)</title>", raw, re.DOTALL)
     html_m  = re.search(r"<html>(.*?)</html>", raw, re.DOTALL)
     img_m   = re.search(r"<image_prompt>(.*?)</image_prompt>", raw, re.DOTALL)
 
-    if not (title_m and html_m and img_m):
-        print("    ⚠️ Модель не вернула нужный формат, повторяю запрос...")
+    retry_count = 0
+    while not (title_m and html_m and img_m) and retry_count < 2:
+        retry_count += 1
+        print(f"    ⚠️ Модель не вернула нужный формат, повторяю запрос ({retry_count}/2)...")
         print("    --- RAW OTVET (первые 1500 симв.) ---")
         print(raw[:1500])
         print("    --------------------------------------")
@@ -314,7 +324,7 @@ gemini-3.5-flash вместо тегов начала выдавать черн�
         img_m   = re.search(r"<image_prompt>(.*?)</image_prompt>", raw, re.DOTALL)
 
     if not (title_m and html_m and img_m):
-        print("    ❌ Повтор тоже не дал нужный формат:")
+        print("    ❌ Все попытки не дали нужный формат:")
         print(raw[:2000])
         raise ValueError(f"Не удалось распарсить ответ модели для темы: {topic}")
 
