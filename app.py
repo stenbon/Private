@@ -54,6 +54,7 @@ import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 from google import genai
+from anthropic import Anthropic
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -68,6 +69,14 @@ WP_CATEGORY     = int(os.getenv("WP_CATEGORY", "1"))
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL    = "gemini-3.5-flash"
 FAL_API_KEY     = os.getenv("FAL_API_KEY")
+# 14.08.2026: фактчек через Claude Haiku + web_search (НЕ Sonnet — тот использовался
+# для полной генерации статьи и стоил ~$3/ночь, отсюда решение отключить 12.08.2026).
+# Haiku применяется ТОЛЬКО к узкому шагу проверки цифр/фактов, не к генерации —
+# по оценке в разы дешевле (центы/день на объёме 3 статьи/день). Если ключ не задан
+# в .env — фактчек тихо пропускается (см. self_check_facts_haiku ниже), пайплайн
+# не падает, но публикует без проверки, как раньше.
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 SHEET_ID     = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
 MULTIKI_SHEET_NAME = "Мультики"
@@ -87,6 +96,7 @@ AUTHOR_BANNER = (
 
 wp_auth      = (WP_USER, WP_APP_PASS)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 
 
 def _gemini_complete(system_prompt, user_content, max_tokens=8000):
@@ -587,26 +597,45 @@ def publish_post(title, html, status="publish"):
 
 # ─── Главная функция ──────────────────────────────────────────────────────────
 # ─── Самопроверка фактов ──────────────────────────────────────────────────────
+def _extract_anthropic_text(response):
+    """Собирает финальный текст ответа Anthropic из всех text-блоков
+    (между ними могут быть блоки web_search_tool_result — их пропускаем)."""
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
 def self_check_facts(html):
-    """Просит модель проверить статью на выдуманные/неточные факты,
-    используя web_search для сверки с реальными источниками.
+    """14.08.2026: переписано на Claude Haiku 4.5 + web_search (реальный веб-поиск),
+    вместо отключённой 12.08.2026 заглушки на Gemini без grounding. Используется
+    ТОЛЬКО на этом узком шаге проверки — не для генерации статьи (та остаётся на
+    Gemini, бесплатно) — поэтому по деньгам это центы/день, а не $3/ночь, которые
+    раньше отпугнули от полного переезда на Claude. Если ANTHROPIC_API_KEY не задан
+    в .env — фактчек пропускается явно (не притворяется, что прошёл), см. ниже.
     Возвращает (needs_review, problems_text): needs_review=True, если
     найдены проблемы (тогда вызывающий код должен либо исправить их через
     fix_flagged_issues(), либо отправить пост в черновики)."""
-    print("[доп] Проверяю факты в статье через веб-поиск...")
+    if anthropic_client is None:
+        print("    ⚠️ ФАКТЧЕК ПРОПУЩЕН — ANTHROPIC_API_KEY не задан в .env. "
+              "Публикую как черновик на всякий случай (честнее, чем ложное 'OK').")
+        return True, "ANTHROPIC_API_KEY отсутствует — фактчек не выполнялся"
+    print("[доп] Проверяю факты в статье через веб-поиск (Claude Haiku)...")
     text_only = re.sub(r'<[^>]+>', '', html)
     try:
-        fact_system = (
-            "Ты — строгий фактчекер. В тексте есть конкретные цифры, проценты, "
-            "статистика. Для каждой такой цифры сделай веб-поиск и проверь, "
-            "существует ли реально такое исследование/данные с такими значениями, "
-            "и что метрика (название показателя) в тексте совпадает с метрикой "
-            "в источнике, а не подменена похожей по смыслу. "
-            "Не проверяй общие утверждения без цифр. "
-            "ВАЖНО: после всех поисков ты ОБЯЗАН написать финальный текстовый вердикт "
-            "(OK или список проблем) — это не опционально."
-        )
-        fact_user = f"""Проверь через веб-поиск каждую цифру и статистику в этой статье.
+        response = anthropic_client.messages.create(
+            model=ANTHROPIC_HAIKU_MODEL,
+            max_tokens=4000,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            system=(
+                "Ты — строгий фактчекер. В тексте есть конкретные цифры, проценты, "
+                "статистика. Для каждой такой цифры сделай web_search и проверь, "
+                "существует ли реально такое исследование/данные с такими значениями, "
+                "и что метрика (название показателя) в тексте совпадает с метрикой "
+                "в источнике, а не подменена похожей по смыслу. "
+                "Не проверяй общие утверждения без цифр. "
+                "ВАЖНО: после всех поисков ты ОБЯЗАН написать финальный текстовый вердикт "
+                "(OK или список проблем) — это не опционально."
+            ),
+            messages=[
+                {"role": "user", "content": f"""Проверь через веб-поиск каждую цифру и статистику в этой статье.
 
 Если все цифры подтвердились реальными источниками, и метрики не перепутаны — ответь ровно: OK
 
@@ -616,10 +645,13 @@ def self_check_facts(html):
 указанием, что именно не так и какое верное значение/метрика нашлась в источнике.
 
 Текст статьи:
-{text_only[:6000]}"""
-        result = _gemini_complete(fact_system, fact_user, max_tokens=4000).strip()
+{text_only[:6000]}"""},
+            ],
+        )
+        result = _extract_anthropic_text(response).strip()
         if not result:
             print("    ⚠️ Фактчек не дал текстового ответа (закончились токены на поиск).")
+            print(f"    stop_reason: {response.stop_reason}, usage: {response.usage}")
             print("    Публикую как черновик на всякий случай — нужна ручная проверка.")
             return True, ""
         if result.upper().startswith("OK"):
@@ -639,31 +671,40 @@ def self_check_facts(html):
 def fix_flagged_issues(html, problems):
     """Пробует исправить конкретные проблемы, найденные self_check_facts,
     вместо того чтобы сразу отправлять пост в черновики. Для каждой
-    проблемы модель через web_search ищет точное число/метрику и правит
-    текст, либо убирает утверждение целиком, если подтвердить не может.
+    проблемы модель (Claude Haiku) через web_search ищет точное число/метрику
+    и правит текст, либо убирает утверждение целиком, если подтвердить не может.
     Возвращает исправленный HTML (или исходный html, если исправление
-    не удалось / выглядит подозрительно)."""
+    не удалось / выглядит подозрительно, либо если ключа нет вовсе)."""
+    if anthropic_client is None:
+        return html
     print("[доп] Пробую исправить найденные фактчеком проблемы (1 попытка)...")
     try:
-        fix_system = (
-            "Ты редактируешь готовую статью для Дзен, чтобы исправить "
-            "конкретные фактические проблемы, которые нашёл фактчекер. "
-            "Для каждой проблемы: через веб-поиск найди точное значение "
-            "метрики (число И название метрики дословно, не заменяй "
-            "похожим по смыслу словом) и исправь текст на месте. Если "
-            "подтвердить цифру не получается вообще — убери её из текста, "
-            "перепиши фразу без конкретного числа, сохранив смысл абзаца. "
-            "Не трогай части текста, к которым нет претензий. Верни ПОЛНЫЙ "
-            "исправленный HTML статьи целиком (все разделы от вступления "
-            "до заключения), без комментариев до/после, в тех же тегах "
-            "<h2>/<h3>/<p>/<ul>/<li>, что и в исходнике."
-        )
-        fix_user = f"""Найденные фактчеком проблемы:
+        response = anthropic_client.messages.create(
+            model=ANTHROPIC_HAIKU_MODEL,
+            max_tokens=6000,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            system=(
+                "Ты редактируешь готовую статью для Дзен, чтобы исправить "
+                "конкретные фактические проблемы, которые нашёл фактчекер. "
+                "Для каждой проблемы: через web_search найди точное значение "
+                "метрики (число И название метрики дословно, не заменяй "
+                "похожим по смыслу словом) и исправь текст на месте. Если "
+                "подтвердить цифру не получается вообще — убери её из текста, "
+                "перепиши фразу без конкретного числа, сохранив смысл абзаца. "
+                "Не трогай части текста, к которым нет претензий. Верни ПОЛНЫЙ "
+                "исправленный HTML статьи целиком (все разделы от вступления "
+                "до заключения), без комментариев до/после, в тех же тегах "
+                "<h2>/<h3>/<p>/<ul>/<li>, что и в исходнике."
+            ),
+            messages=[
+                {"role": "user", "content": f"""Найденные фактчеком проблемы:
 {problems}
 
 Полный текст статьи для исправления:
-{html}"""
-        fixed = strip_foreign_scripts(_gemini_complete(fix_system, fix_user, max_tokens=6000).strip())
+{html}"""},
+            ],
+        )
+        fixed = strip_foreign_scripts(_extract_anthropic_text(response).strip())
         original_words = len(re.sub(r'<[^>]+>', '', html).split())
         fixed_words = len(re.sub(r'<[^>]+>', '', fixed).split())
         # защита от пустого/усечённого ответа — не даём испорченному варианту
@@ -746,14 +787,22 @@ def publish_next():
 
     try:
         article = generate_article(topic)
-        # 12.08.2026: self_check_facts()/fix_flagged_issues() ОТКЛЮЧЕНЫ — без
-        # веб-поиска (см. _gemini_complete) они не могут реально ничего
-        # проверить, только делают вид. Ложный "фактчек пройден" хуже, чем
-        # честное отсутствие фактчека — решение Владимира (платный вариант
-        # с реальной проверкой через Claude+web_search отклонён по цене).
-        needs_review, structure_reasons = False, []
 
-        structure_ok, structure_reasons = check_structure(article["html"])
+        # 14.08.2026: фактчек возвращён — теперь через Claude Haiku + web_search
+        # (см. self_check_facts выше), не через Gemini без grounding. Один цикл
+        # проверка -> попытка исправить -> перепроверка; если после этого всё ещё
+        # есть проблемы, пост уходит в черновики, а не публикуется с ложным "OK".
+        needs_review, fact_reasons = self_check_facts(article["html"])
+        if needs_review and fact_reasons:
+            fixed_html = fix_flagged_issues(article["html"], fact_reasons)
+            if fixed_html != article["html"]:
+                article["html"] = fixed_html
+                needs_review, fact_reasons = self_check_facts(article["html"])
+
+        structure_reasons = [fact_reasons] if (needs_review and fact_reasons) else []
+
+        structure_ok, extra_structure_reasons = check_structure(article["html"])
+        structure_reasons = structure_reasons + extra_structure_reasons
         if not structure_ok:
             print("    ⚠️ Жёсткая проверка объёма/структуры не пройдена (пост уйдёт в черновики):")
             for reason in structure_reasons:
