@@ -788,21 +788,23 @@ def publish_next():
     try:
         article = generate_article(topic)
 
-        # 14.08.2026: фактчек возвращён — теперь через Claude Haiku + web_search
-        # (см. self_check_facts выше), не через Gemini без grounding. Один цикл
-        # проверка -> попытка исправить -> перепроверка; если после этого всё ещё
-        # есть проблемы, пост уходит в черновики, а не публикуется с ложным "OK".
-        needs_review, fact_reasons = self_check_facts(article["html"])
-        if needs_review and fact_reasons:
-            fixed_html = fix_flagged_issues(article["html"], fact_reasons)
-            if fixed_html != article["html"]:
-                article["html"] = fixed_html
-                needs_review, fact_reasons = self_check_facts(article["html"])
-
-        structure_reasons = [fact_reasons] if (needs_review and fact_reasons) else []
+        # 14.08.2026, ВРЕМЕННО ОТКЛЮЧЕНО (по решению Владимира): self_check_facts()/
+        # fix_flagged_issues() через Claude Haiku написаны и остаются в коде выше,
+        # но не вызываются — Anthropic API заблокирован на сетевом уровне с этого
+        # сервера (403 "Request not allowed" даже на голый /v1/messages без
+        # инструментов, подтверждено curl -v: cf-ray с кодом DME). Groq и Tavily
+        # с этой же сети — тоже 403. Планировался возврат на Gemini grounding после
+        # починки биллинг-аккаунта (переоткрыт 14.08), но даже на Tier 1 конкретно
+        # google_search инструмент продолжает отдавать 429 RESOURCE_EXHAUSTED
+        # (обычная генерация без grounding работает нормально) — похоже, отдельный
+        # квота-бакet на grounding ещё не разблокировался. ПЛАН: проверить
+        # test_grounding2.py на сервере ещё раз позже (через несколько часов/на
+        # следующий день) — если заработает, включить self_check_facts() здесь
+        # обратно вместо needs_review=False.
+        needs_review, fact_reasons = False, ""
 
         structure_ok, extra_structure_reasons = check_structure(article["html"])
-        structure_reasons = structure_reasons + extra_structure_reasons
+        structure_reasons = extra_structure_reasons
         if not structure_ok:
             print("    ⚠️ Жёсткая проверка объёма/структуры не пройдена (пост уйдёт в черновики):")
             for reason in structure_reasons:
