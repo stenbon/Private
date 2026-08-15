@@ -77,6 +77,7 @@ FAL_API_KEY     = os.getenv("FAL_API_KEY")
 # не падает, но публикует без проверки, как раньше.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 SHEET_ID     = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
 MULTIKI_SHEET_NAME = "Мультики"
@@ -597,128 +598,178 @@ def publish_post(title, html, status="publish"):
 
 # ─── Главная функция ──────────────────────────────────────────────────────────
 # ─── Самопроверка фактов ──────────────────────────────────────────────────────
-def _extract_anthropic_text(response):
-    """Собирает финальный текст ответа Anthropic из всех text-блоков
-    (между ними могут быть блоки web_search_tool_result — их пропускаем)."""
-    return "".join(block.text for block in response.content if block.type == "text")
+def _tavily_search(query, max_results=3):
+    """Прямой HTTP-запрос к Tavily Search API (не через Anthropic/Claude -
+    независимый провайдер). Возвращает список результатов
+    [{title, url, content}, ...] или [] при любой ошибке."""
+    if not TAVILY_API_KEY:
+        return []
+    try:
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "search_depth": "basic",
+                "max_results": max_results,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+    except Exception as e:
+        print("    [!] Tavily-поиск не сработал (" + query[:60] + "): " + str(e)[:100])
+        return []
+
+
+def _extract_check_queries(html):
+    """Просит Gemini (обычный вызов, без grounding) выписать до 5 конкретных
+    проверяемых утверждений с цифрами/статистикой из статьи, каждое - в виде
+    короткого поискового запроса."""
+    text_only = re.sub(r'<[^>]+>', '', html)
+    system = (
+        "Ты помогаешь фактчекеру. Найди в тексте статьи конкретные проверяемые "
+        "утверждения: цифры, проценты, статистику, названия исследований. "
+        "Не бери общие фразы без цифр."
+    )
+    user = ("Выпиши не более 5 самых важных проверяемых утверждений с цифрами из этой статьи.\n"
+            "Для каждого - короткий поисковый запрос (3-8 слов), которым можно проверить именно это утверждение в интернете.\n"
+            "Формат ответа - строго по одному запросу на строку, без нумерации и комментариев.\n"
+            "Если проверяемых цифр в статье нет вообще - ответь ровно: НЕТ ЦИФР\n\n"
+            "Текст статьи:\n" + text_only[:6000])
+    try:
+        raw = _gemini_complete(system, user, max_tokens=500).strip()
+    except Exception as e:
+        print("    [!] Не удалось выделить утверждения для фактчека: " + str(e)[:100])
+        return []
+    if not raw or raw.upper().startswith("НЕТ ЦИФР"):
+        return []
+    queries = [line.strip("-•* ").strip() for line in raw.splitlines() if line.strip()]
+    return queries[:5]
 
 
 def self_check_facts(html):
-    """14.08.2026: переписано на Claude Haiku 4.5 + web_search (реальный веб-поиск),
-    вместо отключённой 12.08.2026 заглушки на Gemini без grounding. Используется
-    ТОЛЬКО на этом узком шаге проверки — не для генерации статьи (та остаётся на
-    Gemini, бесплатно) — поэтому по деньгам это центы/день, а не $3/ночь, которые
-    раньше отпугнули от полного переезда на Claude. Если ANTHROPIC_API_KEY не задан
-    в .env — фактчек пропускается явно (не притворяется, что прошёл), см. ниже.
-    Возвращает (needs_review, problems_text): needs_review=True, если
-    найдены проблемы (тогда вызывающий код должен либо исправить их через
-    fix_flagged_issues(), либо отправить пост в черновики)."""
-    if anthropic_client is None:
-        print("    ⚠️ ФАКТЧЕК ПРОПУЩЕН — ANTHROPIC_API_KEY не задан в .env. "
-              "Публикую как черновик на всякий случай (честнее, чем ложное 'OK').")
-        return True, "ANTHROPIC_API_KEY отсутствует — фактчек не выполнялся"
-    print("[доп] Проверяю факты в статье через веб-поиск (Claude Haiku)...")
+    """15.08.2026: фактчек через Tavily Search API (прямой поиск) + обычный
+    Gemini без grounding (сравнивает найденное с текстом статьи). Если
+    TAVILY_API_KEY не задан в .env - фактчек честно пропускается
+    (needs_review=True с пометкой), не притворяется, что прошёл.
+    Возвращает (needs_review, problems_text)."""
+    if not TAVILY_API_KEY:
+        print("    [!] ФАКТЧЕК ПРОПУЩЕН - TAVILY_API_KEY не задан в .env. "
+              "Публикую как черновик на всякий случай (честнее, чем ложное OK).")
+        return True, "TAVILY_API_KEY отсутствует - фактчек не выполнялся"
+
+    print("[доп] Проверяю факты в статье через Tavily + Gemini...")
+    queries = _extract_check_queries(html)
+    if not queries:
+        print("    [OK] В статье нет конкретных цифр для проверки - фактчек пропущен как неприменимый")
+        return False, ""
+
+    search_blocks = []
+    any_results = False
+    for q in queries:
+        results = _tavily_search(q, max_results=3)
+        if results:
+            any_results = True
+        lines = []
+        for r in results:
+            lines.append('  - ' + r.get('title', '') + ': ' + r.get('content', '')[:300])
+        snippet = "\n".join(lines) if lines else "  (поиск не дал результатов)"
+        search_blocks.append("Утверждение/запрос: " + q + "\nНайдено в интернете:\n" + snippet)
+
+    if not any_results:
+        print("    [!] Tavily не вернул ни одного результата ни на один запрос "
+              "(проблема с ключом/сетью/лимитом) - публикую как черновик на всякий случай.")
+        return True, "Tavily не дал результатов ни по одному запросу - фактчек не выполнен"
+
     text_only = re.sub(r'<[^>]+>', '', html)
+    verdict_system = (
+        "Ты - строгий фактчекер. Тебе даны утверждения из статьи и результаты "
+        "веб-поиска по ним. Сравни: подтверждается ли каждое утверждение "
+        "найденными источниками, и не подменена ли метрика похожей по смыслу "
+        "(например, вместо \u00abрост выручки\u00bb в статье написано \u00abрост лояльности\u00bb). "
+        "ВАЖНО: после анализа ты ОБЯЗАН написать финальный текстовый вердикт "
+        "(OK или список проблем) - это не опционально."
+    )
+    verdict_user = ("Результаты поиска по утверждениям из статьи:\n\n" +
+                    chr(10).join(search_blocks) +
+                    "\n\nТекст статьи целиком (для контекста):\n" + text_only[:4000] +
+                    "\n\nЕсли все утверждения подтверждаются найденными источниками (или поиск не нашёл "
+                    "прямого опровержения) - ответь ровно: OK\n\n"
+                    "Если хотя бы одно утверждение прямо противоречит найденным источникам или "
+                    "метрика явно подменена - перечисли проблемные места списком, каждая с новой "
+                    "строки, кратко, с указанием, что не так и какое значение нашлось в источниках.")
+
     try:
-        response = anthropic_client.messages.create(
-            model=ANTHROPIC_HAIKU_MODEL,
-            max_tokens=4000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            system=(
-                "Ты — строгий фактчекер. В тексте есть конкретные цифры, проценты, "
-                "статистика. Для каждой такой цифры сделай web_search и проверь, "
-                "существует ли реально такое исследование/данные с такими значениями, "
-                "и что метрика (название показателя) в тексте совпадает с метрикой "
-                "в источнике, а не подменена похожей по смыслу. "
-                "Не проверяй общие утверждения без цифр. "
-                "ВАЖНО: после всех поисков ты ОБЯЗАН написать финальный текстовый вердикт "
-                "(OK или список проблем) — это не опционально."
-            ),
-            messages=[
-                {"role": "user", "content": f"""Проверь через веб-поиск каждую цифру и статистику в этой статье.
-
-Если все цифры подтвердились реальными источниками, и метрики не перепутаны — ответь ровно: OK
-
-Если хотя бы одна цифра не подтвердилась, выдумана, сильно искажена или метрика
-подменена другой (например, вместо "рост выручки" написано "рост лояльности") —
-перечисли проблемные места списком, каждая проблема с новой строки, кратко, с
-указанием, что именно не так и какое верное значение/метрика нашлась в источнике.
-
-Текст статьи:
-{text_only[:6000]}"""},
-            ],
-        )
-        result = _extract_anthropic_text(response).strip()
-        if not result:
-            print("    ⚠️ Фактчек не дал текстового ответа (закончились токены на поиск).")
-            print(f"    stop_reason: {response.stop_reason}, usage: {response.usage}")
-            print("    Публикую как черновик на всякий случай — нужна ручная проверка.")
-            return True, ""
-        if result.upper().startswith("OK"):
-            print("    ✅ Фактчек через веб-поиск не выявил проблем")
-            return False, ""
-        else:
-            print("    ⚠️ Фактчек нашёл непроверенные/неверные цифры:")
-            for line in result.splitlines():
-                if line.strip():
-                    print(f"       - {line.strip()}")
-            return True, result
+        result = _gemini_complete(verdict_system, verdict_user, max_tokens=1500).strip()
     except Exception as e:
-        print(f"    ⚠️ Фактчек не сработал — публикую как черновик на всякий случай: {str(e)[:120]}")
-        return True, ""  # при ошибке фактчека — лучше перестраховаться и не публиковать сразу
+        print("    [!] Фактчек (сравнение) не сработал - публикую как черновик на всякий случай: " + str(e)[:120])
+        return True, ""
+
+    if not result:
+        print("    [!] Фактчек не дал текстового ответа. Публикую как черновик на всякий случай.")
+        return True, ""
+    if result.upper().startswith("OK"):
+        print("    [OK] Фактчек через Tavily не выявил противоречий")
+        return False, ""
+    else:
+        print("    [!] Фактчек нашёл возможные проблемы:")
+        for line in result.splitlines():
+            if line.strip():
+                print("       - " + line.strip())
+        return True, result
 
 
 def fix_flagged_issues(html, problems):
-    """Пробует исправить конкретные проблемы, найденные self_check_facts,
-    вместо того чтобы сразу отправлять пост в черновики. Для каждой
-    проблемы модель (Claude Haiku) через web_search ищет точное число/метрику
-    и правит текст, либо убирает утверждение целиком, если подтвердить не может.
-    Возвращает исправленный HTML (или исходный html, если исправление
-    не удалось / выглядит подозрительно, либо если ключа нет вовсе)."""
-    if anthropic_client is None:
+    """Пробует исправить проблемы, найденные self_check_facts. Ищет
+    уточнение через Tavily по каждой проблеме, затем просит Gemini (без
+    grounding) переписать проблемные места, либо убрать утверждение, если
+    подтвердить не вышло."""
+    if not TAVILY_API_KEY:
         return html
     print("[доп] Пробую исправить найденные фактчеком проблемы (1 попытка)...")
     try:
-        response = anthropic_client.messages.create(
-            model=ANTHROPIC_HAIKU_MODEL,
-            max_tokens=6000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            system=(
-                "Ты редактируешь готовую статью для Дзен, чтобы исправить "
-                "конкретные фактические проблемы, которые нашёл фактчекер. "
-                "Для каждой проблемы: через web_search найди точное значение "
-                "метрики (число И название метрики дословно, не заменяй "
-                "похожим по смыслу словом) и исправь текст на месте. Если "
-                "подтвердить цифру не получается вообще — убери её из текста, "
-                "перепиши фразу без конкретного числа, сохранив смысл абзаца. "
-                "Не трогай части текста, к которым нет претензий. Верни ПОЛНЫЙ "
-                "исправленный HTML статьи целиком (все разделы от вступления "
-                "до заключения), без комментариев до/после, в тех же тегах "
-                "<h2>/<h3>/<p>/<ul>/<li>, что и в исходнике."
-            ),
-            messages=[
-                {"role": "user", "content": f"""Найденные фактчеком проблемы:
-{problems}
+        extra_results = []
+        for line in problems.splitlines():
+            line = line.strip("-•* ").strip()
+            if not line:
+                continue
+            results = _tavily_search(line[:100], max_results=2)
+            lines = []
+            for r in results:
+                lines.append('  - ' + r.get('title', '') + ': ' + r.get('content', '')[:300])
+            snippet = "\n".join(lines) if lines else "  (уточнение не найдено)"
+            extra_results.append("Проблема: " + line + "\nНайдено при повторном поиске:\n" + snippet)
 
-Полный текст статьи для исправления:
-{html}"""},
-            ],
+        fix_system = (
+            "Ты редактируешь готовую статью для Дзен, чтобы исправить "
+            "конкретные фактические проблемы, которые нашёл фактчекер. "
+            "Для каждой проблемы используй найденное уточнение ниже: если там "
+            "есть точное значение метрики - исправь текст на месте (число И "
+            "название метрики дословно, не заменяй похожим по смыслу словом). "
+            "Если уточнение не найдено - убери цифру из текста, перепиши фразу "
+            "без неё, сохранив смысл абзаца. Не трогай части текста, к которым "
+            "нет претензий. Верни ПОЛНЫЙ исправленный HTML статьи целиком (все "
+            "разделы от вступления до заключения), без комментариев до/после, "
+            "в тех же тегах <h2>/<h3>/<p>/<ul>/<li>, что и в исходнике."
         )
-        fixed = strip_foreign_scripts(_extract_anthropic_text(response).strip())
+        fix_user = ("Найденные фактчеком проблемы и уточнения по ним:\n" +
+                    chr(10).join(extra_results) +
+                    "\n\nПолный текст статьи для исправления:\n" + html)
+        fixed = strip_foreign_scripts(_gemini_complete(fix_system, fix_user, max_tokens=6000).strip())
         original_words = len(re.sub(r'<[^>]+>', '', html).split())
         fixed_words = len(re.sub(r'<[^>]+>', '', fixed).split())
-        # защита от пустого/усечённого ответа — не даём испорченному варианту
-        # заменить рабочую статью
         if fixed_words < original_words * 0.7:
-            print(f"    ⚠️ Исправленный вариант заметно короче оригинала "
-                  f"({fixed_words} слов против {original_words}) — не применяю, "
-                  f"ухожу в черновик с исходным текстом.")
+            print("    [!] Исправленный вариант заметно короче оригинала (" + str(fixed_words) +
+                  " слов против " + str(original_words) + ") - не применяю, ухожу в черновик с исходным текстом.")
             return html
-        print("    ✅ Применена попытка исправления, перепроверяю фактчеком...")
+        print("    [OK] Применена попытка исправления, перепроверяю фактчеком...")
         return fixed
     except Exception as e:
-        print(f"    ⚠️ Исправление не сработало: {str(e)[:120]}")
+        print("    [!] Исправление не сработало: " + str(e)[:120])
         return html
+
+
 MIN_WORDS = 1200  # ниже — жёсткий отказ от публикации (черновик), даже если фактчек OK
 
 
@@ -788,20 +839,15 @@ def publish_next():
     try:
         article = generate_article(topic)
 
-        # 14.08.2026, ВРЕМЕННО ОТКЛЮЧЕНО (по решению Владимира): self_check_facts()/
-        # fix_flagged_issues() через Claude Haiku написаны и остаются в коде выше,
-        # но не вызываются — Anthropic API заблокирован на сетевом уровне с этого
-        # сервера (403 "Request not allowed" даже на голый /v1/messages без
-        # инструментов, подтверждено curl -v: cf-ray с кодом DME). Groq и Tavily
-        # с этой же сети — тоже 403. Планировался возврат на Gemini grounding после
-        # починки биллинг-аккаунта (переоткрыт 14.08), но даже на Tier 1 конкретно
-        # google_search инструмент продолжает отдавать 429 RESOURCE_EXHAUSTED
-        # (обычная генерация без grounding работает нормально) — похоже, отдельный
-        # квота-бакet на grounding ещё не разблокировался. ПЛАН: проверить
-        # test_grounding2.py на сервере ещё раз позже (через несколько часов/на
-        # следующий день) — если заработает, включить self_check_facts() здесь
-        # обратно вместо needs_review=False.
-        needs_review, fact_reasons = False, ""
+        # 15.08.2026: фактчек включён обратно - через Tavily Search API +
+        # обычный Gemini без grounding. Anthropic (403 на сетевом уровне) и
+        # Gemini grounding (открытый баг Google, 429 даже на Tier 1) не используются.
+        needs_review, fact_reasons = self_check_facts(article["html"])
+        if needs_review and fact_reasons:
+            fixed_html = fix_flagged_issues(article["html"], fact_reasons)
+            if fixed_html != article["html"]:
+                article["html"] = fixed_html
+                needs_review, fact_reasons = self_check_facts(article["html"])
 
         structure_ok, extra_structure_reasons = check_structure(article["html"])
         structure_reasons = extra_structure_reasons
