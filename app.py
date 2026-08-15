@@ -54,6 +54,7 @@ import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 from anthropic import Anthropic
 import gspread
 from google.oauth2.service_account import Credentials
@@ -77,7 +78,6 @@ FAL_API_KEY     = os.getenv("FAL_API_KEY")
 # не падает, но публикует без проверки, как раньше.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_HAIKU_MODEL = "claude-haiku-4-5-20251001"
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 SHEET_ID     = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
 MULTIKI_SHEET_NAME = "Мультики"
@@ -98,6 +98,11 @@ AUTHOR_BANNER = (
 wp_auth      = (WP_USER, WP_APP_PASS)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+import os as _os_vertex
+_os_vertex.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", _os_vertex.getenv("GOOGLE_CREDENTIALS_FILE", ""))
+VERTEX_PROJECT_ID = "gen-lang-client-0706505662"
+VERTEX_LOCATION = "us-central1"
+vertex_client = genai.Client(vertexai=True, project=VERTEX_PROJECT_ID, location=VERTEX_LOCATION)
 
 
 def _gemini_complete(system_prompt, user_content, max_tokens=8000):
@@ -598,175 +603,107 @@ def publish_post(title, html, status="publish"):
 
 # ─── Главная функция ──────────────────────────────────────────────────────────
 # ─── Самопроверка фактов ──────────────────────────────────────────────────────
-def _tavily_search(query, max_results=3):
-    """Прямой HTTP-запрос к Tavily Search API (не через Anthropic/Claude -
-    независимый провайдер). Возвращает список результатов
-    [{title, url, content}, ...] или [] при любой ошибке."""
-    if not TAVILY_API_KEY:
-        return []
-    try:
-        resp = requests.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": TAVILY_API_KEY,
-                "query": query,
-                "search_depth": "basic",
-                "max_results": max_results,
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json().get("results", [])
-    except Exception as e:
-        print("    [!] Tavily-поиск не сработал (" + query[:60] + "): " + str(e)[:100])
-        return []
-
-
-def _extract_check_queries(html):
-    """Просит Gemini (обычный вызов, без grounding) выписать до 5 конкретных
-    проверяемых утверждений с цифрами/статистикой из статьи, каждое - в виде
-    короткого поискового запроса."""
-    text_only = re.sub(r'<[^>]+>', '', html)
-    system = (
-        "Ты помогаешь фактчекеру. Найди в тексте статьи конкретные проверяемые "
-        "утверждения: цифры, проценты, статистику, названия исследований. "
-        "Не бери общие фразы без цифр."
-    )
-    user = ("Выпиши не более 5 самых важных проверяемых утверждений с цифрами из этой статьи.\n"
-            "Для каждого - короткий поисковый запрос (3-8 слов), которым можно проверить именно это утверждение в интернете.\n"
-            "Формат ответа - строго по одному запросу на строку, без нумерации и комментариев.\n"
-            "Если проверяемых цифр в статье нет вообще - ответь ровно: НЕТ ЦИФР\n\n"
-            "Текст статьи:\n" + text_only[:6000])
-    try:
-        raw = _gemini_complete(system, user, max_tokens=500).strip()
-    except Exception as e:
-        print("    [!] Не удалось выделить утверждения для фактчека: " + str(e)[:100])
-        return []
-    if not raw or raw.upper().startswith("НЕТ ЦИФР"):
-        return []
-    queries = [line.strip("-•* ").strip() for line in raw.splitlines() if line.strip()]
-    return queries[:5]
+def _extract_anthropic_text(response):
+    """Собирает финальный текст ответа Anthropic из всех text-блоков
+    (между ними могут быть блоки web_search_tool_result — их пропускаем)."""
+    return "".join(block.text for block in response.content if block.type == "text")
 
 
 def self_check_facts(html):
-    """15.08.2026: фактчек через Tavily Search API (прямой поиск) + обычный
-    Gemini без grounding (сравнивает найденное с текстом статьи). Если
-    TAVILY_API_KEY не задан в .env - фактчек честно пропускается
-    (needs_review=True с пометкой), не притворяется, что прошёл.
-    Возвращает (needs_review, problems_text)."""
-    if not TAVILY_API_KEY:
-        print("    [!] ФАКТЧЕК ПРОПУЩЕН - TAVILY_API_KEY не задан в .env. "
-              "Публикую как черновик на всякий случай (честнее, чем ложное OK).")
-        return True, "TAVILY_API_KEY отсутствует - фактчек не выполнялся"
-
-    print("[доп] Проверяю факты в статье через Tavily + Gemini...")
-    queries = _extract_check_queries(html)
-    if not queries:
-        print("    [OK] В статье нет конкретных цифр для проверки - фактчек пропущен как неприменимый")
-        return False, ""
-
-    search_blocks = []
-    any_results = False
-    for q in queries:
-        results = _tavily_search(q, max_results=3)
-        if results:
-            any_results = True
-        lines = []
-        for r in results:
-            lines.append('  - ' + r.get('title', '') + ': ' + r.get('content', '')[:300])
-        snippet = "\n".join(lines) if lines else "  (поиск не дал результатов)"
-        search_blocks.append("Утверждение/запрос: " + q + "\nНайдено в интернете:\n" + snippet)
-
-    if not any_results:
-        print("    [!] Tavily не вернул ни одного результата ни на один запрос "
-              "(проблема с ключом/сетью/лимитом) - публикую как черновик на всякий случай.")
-        return True, "Tavily не дал результатов ни по одному запросу - фактчек не выполнен"
-
+    """15.08.2026: переписано на Vertex AI (Gemini 2.5 Flash + google_search
+    grounding) вместо версии на Claude Haiku (14.08.2026) — Anthropic, Groq и
+    Tavily заблокированы на сетевом уровне с этого сервера (403, подтверждено
+    curl). Обычный Gemini API (generativelanguage.googleapis.com) с grounding
+    отдаёт 429 RESOURCE_EXHAUSTED даже на оплаченном Tier 1 (известный баг
+    Google на стороне платформы) — но Vertex AI (aiplatform.googleapis.com),
+    тот же проект и биллинг, работает без 429 и без сетевой блокировки
+    (проверено test_vertex.py на этом сервере 15.08.2026). Возвращает
+    (needs_review, problems_text): needs_review=True, если найдены проблемы."""
+    print("[доп] Проверяю факты в статье через Vertex AI (Gemini + google_search)...")
     text_only = re.sub(r'<[^>]+>', '', html)
-    verdict_system = (
-        "Ты - строгий фактчекер. Тебе даны утверждения из статьи и результаты "
-        "веб-поиска по ним. Сравни: подтверждается ли каждое утверждение "
-        "найденными источниками, и не подменена ли метрика похожей по смыслу "
-        "(например, вместо \u00abрост выручки\u00bb в статье написано \u00abрост лояльности\u00bb). "
-        "ВАЖНО: после анализа ты ОБЯЗАН написать финальный текстовый вердикт "
-        "(OK или список проблем) - это не опционально."
-    )
-    verdict_user = ("Результаты поиска по утверждениям из статьи:\n\n" +
-                    chr(10).join(search_blocks) +
-                    "\n\nТекст статьи целиком (для контекста):\n" + text_only[:4000] +
-                    "\n\nЕсли все утверждения подтверждаются найденными источниками (или поиск не нашёл "
-                    "прямого опровержения) - ответь ровно: OK\n\n"
-                    "Если хотя бы одно утверждение прямо противоречит найденным источникам или "
-                    "метрика явно подменена - перечисли проблемные места списком, каждая с новой "
-                    "строки, кратко, с указанием, что не так и какое значение нашлось в источниках.")
-
     try:
-        result = _gemini_complete(verdict_system, verdict_user, max_tokens=1500).strip()
+        response = vertex_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Ты — строгий фактчекер. В тексте есть конкретные цифры, проценты, "
+                "статистика. Для каждой такой цифры используй поиск и проверь, "
+                "существует ли реально такое исследование/данные с такими значениями, "
+                "и что метрика (название показателя) в тексте совпадает с метрикой "
+                "в источнике, а не подменена похожей по смыслу.\n"
+                "Не проверяй общие утверждения без цифр.\n"
+                "Если все цифры подтвердились реальными источниками, и метрики не "
+                "перепутаны — ответь ровно: OK\n"
+                "Если хотя бы одна цифра не подтвердилась, выдумана, сильно искажена "
+                "или метрика подменена другой (например, вместо \"рост выручки\" "
+                "написано \"рост лояльности\") — перечисли проблемные места списком, "
+                "каждая проблема с новой строки, кратко, с указанием, что именно не "
+                "так и какое верное значение/метрика нашлась в источнике.\n\n"
+                f"Текст статьи:\n{text_only[:6000]}"
+            ),
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]
+            ),
+        )
+        result = (response.text or "").strip()
+        if not result:
+            print("    ⚠️ Фактчек не дал текстового ответа. Публикую как черновик — нужна ручная проверка.")
+            return True, ""
+        if result.upper().startswith("OK"):
+            print("    ✅ Фактчек через Vertex AI не выявил проблем")
+            return False, ""
+        else:
+            print("    ⚠️ Фактчек нашёл непроверенные/неверные цифры:")
+            for line in result.splitlines():
+                if line.strip():
+                    print(f"       - {line.strip()}")
+            return True, result
     except Exception as e:
-        print("    [!] Фактчек (сравнение) не сработал - публикую как черновик на всякий случай: " + str(e)[:120])
-        return True, ""
-
-    if not result:
-        print("    [!] Фактчек не дал текстового ответа. Публикую как черновик на всякий случай.")
-        return True, ""
-    if result.upper().startswith("OK"):
-        print("    [OK] Фактчек через Tavily не выявил противоречий")
-        return False, ""
-    else:
-        print("    [!] Фактчек нашёл возможные проблемы:")
-        for line in result.splitlines():
-            if line.strip():
-                print("       - " + line.strip())
-        return True, result
+        print(f"    ⚠️ Фактчек не сработал — публикую как черновик на всякий случай: {str(e)[:120]}")
+        return True, ""  # при ошибке фактчека — лучше перестраховаться и не публиковать сразу
 
 
 def fix_flagged_issues(html, problems):
-    """Пробует исправить проблемы, найденные self_check_facts. Ищет
-    уточнение через Tavily по каждой проблеме, затем просит Gemini (без
-    grounding) переписать проблемные места, либо убрать утверждение, если
-    подтвердить не вышло."""
-    if not TAVILY_API_KEY:
-        return html
+    """Правит проблемы, найденные self_check_facts, через Vertex AI (Gemini +
+    google_search), вместо того чтобы сразу отправлять пост в черновики.
+    Возвращает исправленный HTML (или исходный html, если исправление
+    не удалось / выглядит подозрительно)."""
     print("[доп] Пробую исправить найденные фактчеком проблемы (1 попытка)...")
     try:
-        extra_results = []
-        for line in problems.splitlines():
-            line = line.strip("-•* ").strip()
-            if not line:
-                continue
-            results = _tavily_search(line[:100], max_results=2)
-            lines = []
-            for r in results:
-                lines.append('  - ' + r.get('title', '') + ': ' + r.get('content', '')[:300])
-            snippet = "\n".join(lines) if lines else "  (уточнение не найдено)"
-            extra_results.append("Проблема: " + line + "\nНайдено при повторном поиске:\n" + snippet)
-
-        fix_system = (
-            "Ты редактируешь готовую статью для Дзен, чтобы исправить "
-            "конкретные фактические проблемы, которые нашёл фактчекер. "
-            "Для каждой проблемы используй найденное уточнение ниже: если там "
-            "есть точное значение метрики - исправь текст на месте (число И "
-            "название метрики дословно, не заменяй похожим по смыслу словом). "
-            "Если уточнение не найдено - убери цифру из текста, перепиши фразу "
-            "без неё, сохранив смысл абзаца. Не трогай части текста, к которым "
-            "нет претензий. Верни ПОЛНЫЙ исправленный HTML статьи целиком (все "
-            "разделы от вступления до заключения), без комментариев до/после, "
-            "в тех же тегах <h2>/<h3>/<p>/<ul>/<li>, что и в исходнике."
+        response = vertex_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Ты редактируешь готовую статью для Дзен, чтобы исправить "
+                "конкретные фактические проблемы, которые нашёл фактчекер. "
+                "Для каждой проблемы: используй поиск, найди точное значение "
+                "метрики (число И название метрики дословно, не заменяй "
+                "похожим по смыслу словом) и исправь текст на месте. Если "
+                "подтвердить цифру не получается вообще — убери её из текста, "
+                "перепиши фразу без конкретного числа, сохранив смысл абзаца. "
+                "Не трогай части текста, к которым нет претензий. Верни ПОЛНЫЙ "
+                "исправленный HTML статьи целиком (все разделы от вступления "
+                "до заключения), без комментариев до/после, в тех же тегах "
+                "<h2>/<h3>/<p>/<ul>/<li>, что и в исходнике.\n\n"
+                f"Найденные фактчеком проблемы:\n{problems}\n\n"
+                f"Полный текст статьи для исправления:\n{html}"
+            ),
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]
+            ),
         )
-        fix_user = ("Найденные фактчеком проблемы и уточнения по ним:\n" +
-                    chr(10).join(extra_results) +
-                    "\n\nПолный текст статьи для исправления:\n" + html)
-        fixed = strip_foreign_scripts(_gemini_complete(fix_system, fix_user, max_tokens=6000).strip())
+        fixed = strip_foreign_scripts((response.text or "").strip())
         original_words = len(re.sub(r'<[^>]+>', '', html).split())
         fixed_words = len(re.sub(r'<[^>]+>', '', fixed).split())
+        # защита от пустого/усечённого ответа — не даём испорченному варианту
+        # заменить рабочую статью
         if fixed_words < original_words * 0.7:
-            print("    [!] Исправленный вариант заметно короче оригинала (" + str(fixed_words) +
-                  " слов против " + str(original_words) + ") - не применяю, ухожу в черновик с исходным текстом.")
+            print(f"    ⚠️ Исправленный вариант заметно короче оригинала "
+                  f"({fixed_words} слов против {original_words}) — не применяю, "
+                  f"ухожу в черновик с исходным текстом.")
             return html
-        print("    [OK] Применена попытка исправления, перепроверяю фактчеком...")
+        print("    ✅ Применена попытка исправления, перепроверяю фактчеком...")
         return fixed
     except Exception as e:
-        print("    [!] Исправление не сработало: " + str(e)[:120])
+        print(f"    ⚠️ Исправление не сработало: {str(e)[:120]}")
         return html
 
 
@@ -828,7 +765,100 @@ def check_for_leaked_artifacts(html):
     return (len(hits) == 0), hits
 
 
+MIN_PUBLISH_GAP_HOURS = 4  # 15.08.2026: не публиковать чаще, чем раз в 4 часа
+                            # (даже при ручных/тестовых запусках --article 999),
+                            # чтобы тестовые прогоны не заваливали ленту подряд.
+
+
+def get_last_publish_time():
+    """Возвращает datetime (UTC, aware) последней ОПУБЛИКОВАННОЙ статьи через
+    WordPress REST API, или None если постов нет / запрос не удался (в этом
+    случае публикация не блокируется — лучше пропустить проверку, чем
+    случайно никогда не публиковать из-за временной ошибки API)."""
+    try:
+        response = requests.get(
+            f"{WP_URL}/wp-json/wp/v2/posts",
+            params={"status": "publish", "per_page": 1, "orderby": "date", "order": "desc"},
+            auth=wp_auth,
+            timeout=15,
+        )
+        response.raise_for_status()
+        posts = response.json()
+        if not posts:
+            return None
+        from datetime import timezone
+        return datetime.fromisoformat(posts[0]["date_gmt"]).replace(tzinfo=timezone.utc)
+    except Exception as e:
+        print(f"    ⚠️ Не удалось проверить время последней публикации: {str(e)[:120]}")
+        return None
+
+
+def get_trending_topic(existing_topics):
+    """15.08.2026: сканирует тренды в нише "нейросети/ИИ" за последние 24-48ч
+    через Vertex AI grounding (google_search) и предлагает ОДНУ конкретную,
+    ещё не освещённую тему для статьи. Идея - не писать по заранее заготовленной
+    очереди тем в отрыве от того, что реально обсуждают сегодня, а ловить
+    актуальную волну (по аналогии с trend-watching в чужих контент-пайплайнах).
+    Возвращает строку темы или None (если ничего подходящего не нашлось / что-то
+    пошло не так - в этом случае пайплайн просто продолжает работать по старой
+    очереди из Google Sheets, ничего не ломается)."""
+    try:
+        avoid_list = "\n".join(f"- {t}" for t in existing_topics[-60:])
+        response = vertex_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Ты - редактор Дзен-канала про нейросети и ИИ для широкой "
+                "русскоязычной аудитории (не разработчики, обычные люди, которые "
+                "пользуются ИИ в быту и работе). Через поиск найди, что реально "
+                "обсуждают/что произошло в теме нейросетей и ИИ за последние "
+                "24-48 часов: новые релизы моделей, громкие новости, вирусные "
+                "кейсы использования ИИ, тренды. Выбери ОДНУ конкретную, узкую "
+                "тему для статьи - такую, чтобы заголовок цеплял обычного "
+                "человека, а не разработчика (пример хорошей темы: 'Новая "
+                "функция Gemini бесплатно делает то, за что раньше платили "
+                "дизайнерам' - НЕ 'Обзор архитектуры новой модели').\n\n"
+                "Эти темы уже освещены на канале, НЕ повторяй их и не "
+                "предлагай близкие по сути:\n"
+                f"{avoid_list}\n\n"
+                "Ответь СТРОГО одной строкой - только сама тема (5-12 слов), "
+                "без кавычек, без номеров, без пояснений. Если за последние "
+                "24-48ч не нашлось ничего конкретного и вирусного в этой нише "
+                "- ответь ровно: НЕТ ТРЕНДА"
+            ),
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]
+            ),
+        )
+        result = (response.text or "").strip()
+        if not result or result.upper().startswith("НЕТ ТРЕНДА"):
+            return None
+        result_lower = result.lower()
+        for t in existing_topics:
+            if t and (t.lower() in result_lower or result_lower in t.lower()):
+                print(f"    ⚠️ Тренд-тема похожа на уже освещённую ({t[:50]}) - пропускаю.")
+                return None
+        return result
+    except Exception as e:
+        print(f"    ⚠️ Не удалось получить тренд-тему: {str(e)[:120]} - работаю по обычной очереди.")
+        return None
+
+
 def publish_next():
+    print("[0/5] Проверяю тренд дня в нише...")
+    try:
+        gc = get_sheets_client()
+        ws = gc.open_by_key(SHEET_ID).sheet1
+        all_rows = ws.get_all_values()
+        existing_topics = [row[0].strip() for row in all_rows[1:] if len(row) > 0 and row[0].strip()]
+        trend_topic = get_trending_topic(existing_topics)
+        if trend_topic:
+            print(f"    🔥 Тренд дня: «{trend_topic}» - добавляю в начало очереди")
+            ws.insert_row([trend_topic, ""], index=2)
+        else:
+            print("    Актуального тренда не найдено - работаю по обычной очереди тем.")
+    except Exception as e:
+        print(f"    ⚠️ Проверка тренда не удалась: {str(e)[:120]} - работаю по обычной очереди тем.")
+
     topic, row_index = get_next_topic()
     if not topic:
         print("Нет новых тем в таблице — все опубликованы.")
@@ -839,15 +869,15 @@ def publish_next():
     try:
         article = generate_article(topic)
 
-        # 15.08.2026: фактчек включён обратно - через Tavily Search API +
-        # обычный Gemini без grounding. Anthropic (403 на сетевом уровне) и
-        # Gemini grounding (открытый баг Google, 429 даже на Tier 1) не используются.
+        # 15.08.2026: фактчек восстановлен через Vertex AI (Gemini + google_search) —
+        # Anthropic/Groq/Tavily заблокированы на сетевом уровне с этого сервера,
+        # обычный Gemini grounding (generativelanguage.googleapis.com) упирается в
+        # баг 429 на стороне Google даже на оплаченном тарифе, а Vertex AI
+        # (aiplatform.googleapis.com) работает без ограничений (см. test_vertex.py).
         needs_review, fact_reasons = self_check_facts(article["html"])
         if needs_review and fact_reasons:
-            fixed_html = fix_flagged_issues(article["html"], fact_reasons)
-            if fixed_html != article["html"]:
-                article["html"] = fixed_html
-                needs_review, fact_reasons = self_check_facts(article["html"])
+            article["html"] = fix_flagged_issues(article["html"], fact_reasons)
+            needs_review, fact_reasons = self_check_facts(article["html"])
 
         structure_ok, extra_structure_reasons = check_structure(article["html"])
         structure_reasons = extra_structure_reasons
@@ -866,6 +896,20 @@ def publish_next():
             structure_reasons = structure_reasons + [f"подозрительный артефакт в тексте ({h})" for h in artifact_hits]
             needs_review = True
 
+        if not needs_review:
+            last_pub = get_last_publish_time()
+            if last_pub is not None:
+                from datetime import timezone
+                elapsed_seconds = (datetime.now(timezone.utc) - last_pub).total_seconds()
+                if elapsed_seconds < MIN_PUBLISH_GAP_HOURS * 3600:
+                    elapsed_min = int(elapsed_seconds // 60)
+                    print(f"    ⏳ С последней публикации прошло {elapsed_min} мин "
+                          f"(< {MIN_PUBLISH_GAP_HOURS}ч) — ухожу в черновик, не публикую сразу.")
+                    structure_reasons = structure_reasons + [
+                        f"интервал публикации < {MIN_PUBLISH_GAP_HOURS}ч (прошло {elapsed_min} мин)"
+                    ]
+                    needs_review = True
+
         cover_tag = generate_cover_image_tag(article["image_prompt"], article["title"])
         html_with_images = cover_tag + "\n" + article["html"]
         html_with_images = insert_illustrations(html_with_images, article["image_prompt"])
@@ -880,7 +924,10 @@ def publish_next():
             mark_multik_used(multik_row, post["link"])
 
         if needs_review:
-            reason_note = "; ".join(structure_reasons) if structure_reasons else "проверка фактов"
+            reasons_all = list(structure_reasons)
+            if fact_reasons:
+                reasons_all.append(f"фактчек: {fact_reasons}")
+            reason_note = "; ".join(reasons_all) if reasons_all else "проверка фактов"
             mark_published(row_index, f"ЧЕРНОВИК (нужна проверка: {reason_note}): {post['link']}")
         else:
             mark_published(row_index, post["link"])
