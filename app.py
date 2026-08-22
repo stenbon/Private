@@ -55,7 +55,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from anthropic import Anthropic
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -70,14 +69,10 @@ WP_CATEGORY     = int(os.getenv("WP_CATEGORY", "1"))
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL    = "gemini-3.5-flash"
 FAL_API_KEY     = os.getenv("FAL_API_KEY")
-# 14.08.2026: фактчек через Claude Haiku + web_search (НЕ Sonnet — тот использовался
-# для полной генерации статьи и стоил ~$3/ночь, отсюда решение отключить 12.08.2026).
-# Haiku применяется ТОЛЬКО к узкому шагу проверки цифр/фактов, не к генерации —
-# по оценке в разы дешевле (центы/день на объёме 3 статьи/день). Если ключ не задан
-# в .env — фактчек тихо пропускается (см. self_check_facts_haiku ниже), пайплайн
-# не падает, но публикует без проверки, как раньше.
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-ANTHROPIC_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+# 22.08.2026: Anthropic-код (ключ/клиент/модель Haiku) удалён как мёртвый —
+# фактчек с 15.08.2026 идёт через Vertex AI (Gemini + google_search), см.
+# self_check_facts() ниже; Anthropic с этого сервера всё равно заблокирован
+# на сетевом уровне (403, подтверждено curl).
 
 SHEET_ID     = "1d8VS3BmMAZUWCXG0Ha2I-R1b7gdXiVEO_p8RssyaXME"
 MULTIKI_SHEET_NAME = "Мультики"
@@ -97,7 +92,6 @@ AUTHOR_BANNER = (
 
 wp_auth      = (WP_USER, WP_APP_PASS)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 import os as _os_vertex
 _os_vertex.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", _os_vertex.getenv("GOOGLE_CREDENTIALS_FILE", ""))
 VERTEX_PROJECT_ID = "gen-lang-client-0706505662"
@@ -603,12 +597,6 @@ def publish_post(title, html, status="publish"):
 
 # ─── Главная функция ──────────────────────────────────────────────────────────
 # ─── Самопроверка фактов ──────────────────────────────────────────────────────
-def _extract_anthropic_text(response):
-    """Собирает финальный текст ответа Anthropic из всех text-блоков
-    (между ними могут быть блоки web_search_tool_result — их пропускаем)."""
-    return "".join(block.text for block in response.content if block.type == "text")
-
-
 def self_check_facts(html):
     """15.08.2026: переписано на Vertex AI (Gemini 2.5 Flash + google_search
     grounding) вместо версии на Claude Haiku (14.08.2026) — Anthropic, Groq и
